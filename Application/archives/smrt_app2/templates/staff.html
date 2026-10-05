@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SMRT Staff — Inspection Dashboard</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div class="hazard-rail"></div>
+  <div class="topbar">
+    <div class="brand"><span class="dot"></span> SMRT Inspection Dashboard</div>
+    <div class="topbar-actions">
+      <button class="btn-tutorial" onclick="openTutorial()">
+        <i class="fa fa-graduation-cap" aria-hidden="true"></i> Tutorial
+      </button>
+      <div class="user-chip">
+        <span class="name"><i class="fa fa-user-circle" aria-hidden="true"></i> {{ display_name }}</span>
+        <a class="logout-link" href="{{ url_for('logout') }}"><i class="fa fa-sign-out" aria-hidden="true"></i> Log Out</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="staff-page">
+    <div class="staff-toolbar">
+      <div class="filter-pills">
+        <a class="filter-pill {{ 'active' if filter_type == 'all' else '' }}" href="{{ url_for('staff_home', type='all', date_filter=date_filter) }}">
+          🚦 All <span class="count">({{ counts.all }})</span>
+        </a>
+        <a class="filter-pill {{ 'active' if filter_type == 'car' else '' }}" href="{{ url_for('staff_home', type='car', date_filter=date_filter) }}">
+          🚗 Car <span class="count">({{ counts.car }})</span>
+        </a>
+        <a class="filter-pill {{ 'active' if filter_type == 'bus' else '' }}" href="{{ url_for('staff_home', type='bus', date_filter=date_filter) }}">
+          🚌 Bus <span class="count">({{ counts.bus }})</span>
+        </a>
+        <a class="filter-pill {{ 'active' if filter_type == 'doubledecker' else '' }}" href="{{ url_for('staff_home', type='doubledecker', date_filter=date_filter) }}">
+          🚎 Double Decker <span class="count">({{ counts.doubledecker }})</span>
+        </a>
+      </div>
+      <div class="toolbar-right-actions">
+        <button class="btn btn-outline" id="expand-toggle-btn" style="width:auto;" onclick="toggleExpandAll()">
+          <i class="fa fa-expand" aria-hidden="true" id="expand-toggle-icon"></i>
+          <span id="expand-toggle-label">Expand All</span>
+        </button>
+        <button class="btn btn-primary" style="width:auto;" onclick="downloadSheet()">
+          <i class="fa fa-download" aria-hidden="true"></i> Download Spreadsheet
+        </button>
+      </div>
+    </div>
+
+    <div class="staff-toolbar-secondary">
+      <div class="date-pills">
+        <span class="date-pills-label"><i class="fa fa-calendar" aria-hidden="true"></i> Show:</span>
+        <a class="date-pill {{ 'active' if date_filter == 'all' else '' }}" href="{{ url_for('staff_home', type=filter_type, date_filter='all') }}">All Dates</a>
+        <a class="date-pill {{ 'active' if date_filter == 'today' else '' }}" href="{{ url_for('staff_home', type=filter_type, date_filter='today') }}">Today</a>
+        <a class="date-pill {{ 'active' if date_filter == 'week' else '' }}" href="{{ url_for('staff_home', type=filter_type, date_filter='week') }}">This Week</a>
+      </div>
+      <button class="btn-danger-outline" onclick="openClearAllWarning()">
+        <i class="fa fa-trash" aria-hidden="true"></i> Clear All Data
+      </button>
+    </div>
+
+    <div class="staff-content">
+      {% if vehicles|length == 0 %}
+      <div class="no-results">
+        <div class="big-icon">📋</div>
+        <h3>No inspections in this category yet</h3>
+        <p>Once technicians submit inspections, they will appear here.</p>
+      </div>
+      {% else %}
+      <div class="staff-grid" id="staff-grid">
+        {% for v in vehicles %}
+        {% set cfg = vehicle_config[v.vehicle_type] %}
+        <div class="inspection-card" data-id="{{ v.id }}">
+          <button class="ic-header" onclick="toggleCard('{{ v.id }}')" aria-expanded="false">
+            <div class="v-icon-sm">
+              {% if v.vehicle_type == 'car' %}🚗
+              {% elif v.vehicle_type == 'bus' %}🚌
+              {% else %}🚎{% endif %}
+            </div>
+            <div class="ic-header-text">
+              <div class="ic-type">{{ cfg.label }}</div>
+              <div class="ic-time"><i class="fa fa-clock-o" aria-hidden="true"></i> {{ v.last_edited }}</div>
+              <div class="ic-tech"><i class="fa fa-wrench" aria-hidden="true"></i> Entered by {{ v.added_by or "Unknown" }}</div>
+            </div>
+            <i class="fa fa-chevron-down ic-chevron" aria-hidden="true"></i>
+          </button>
+          <div class="ic-body">
+
+            <div class="ic-image-block">
+              <div class="ib-label">License Plate</div>
+              {% if v.plate_image %}
+              <img class="plate-img" src="{{ v.plate_image }}" alt="Plate photo">
+              {% endif %}
+              <input type="text"
+                     class="plate-text-input {{ '' if v.plate_text else 'needs-fill' }}"
+                     placeholder="Type the plate number shown above"
+                     value="{{ v.plate_text }}"
+                     data-field="plate_text"
+                     onchange="saveText('{{ v.id }}', 'plate_text', this)">
+              <div class="save-hint" id="hint-plate-{{ v.id }}"></div>
+            </div>
+
+            <div class="ic-image-block">
+              <div class="ib-label">Odometer</div>
+              {% if v.odometer_image %}
+              <img class="odo-img" src="{{ v.odometer_image }}" alt="Odometer photo">
+              {% endif %}
+              <input type="text"
+                     class="odometer-text-input {{ '' if v.odometer_text else 'needs-fill' }}"
+                     placeholder="Type the odometer reading shown above (km)"
+                     value="{{ v.odometer_text }}"
+                     data-field="odometer_text"
+                     onchange="saveText('{{ v.id }}', 'odometer_text', this)">
+              <div class="save-hint" id="hint-odo-{{ v.id }}"></div>
+            </div>
+
+            <div class="ic-tyres">
+              <div class="ib-label">Tyre Tread Depth (mm)</div>
+              <table>
+                {% for row in cfg.rows %}
+                  {% for t in row.left + row.right %}
+                  <tr>
+                    <td class="t-label">{{ t.label }}</td>
+                    <td class="t-val {{ 'low' if v.tyres.get(t.code) is not none and v.tyres.get(t.code)|float < 3 else '' }}">
+                      {{ v.tyres.get(t.code, '—') }} mm
+                    </td>
+                  </tr>
+                  {% endfor %}
+                {% endfor %}
+              </table>
+            </div>
+
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  {% include "_tutorial_modal.html" %}
+
+  <!-- =============== CLEAR ALL DATA: STEP 1 WARNING =============== -->
+  <div class="modal-overlay" id="clear-warning-overlay">
+    <div class="modal-sheet danger-sheet">
+      <div class="modal-header danger-header">
+        <h3><i class="fa fa-exclamation-triangle" aria-hidden="true"></i> Clear All Data</h3>
+        <button class="modal-close" onclick="closeClearAllWarning()">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="danger-text">
+          This will <strong>permanently delete every vehicle inspection</strong> in the
+          database — every photo, tyre reading, and plate/odometer entry —
+          for every vehicle type and every date, not just the ones currently
+          shown on screen.
+        </p>
+        <p class="danger-text">
+          <strong>This cannot be undone.</strong> Please make sure you have
+          downloaded a spreadsheet copy of everything you need before
+          continuing.
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeClearAllWarning()">Cancel</button>
+        <button class="btn btn-danger" onclick="proceedToPasswordConfirm()">
+          <i class="fa fa-trash" aria-hidden="true"></i> Yes, Continue
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =============== CLEAR ALL DATA: STEP 2 PASSWORD =============== -->
+  <div class="modal-overlay" id="clear-password-overlay">
+    <div class="modal-sheet danger-sheet">
+      <div class="modal-header danger-header">
+        <h3><i class="fa fa-lock" aria-hidden="true"></i> Confirm Your Password</h3>
+        <button class="modal-close" onclick="closeClearPasswordModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="danger-text">
+          For your safety, please re-enter your password to confirm you want
+          to permanently delete all inspection data.
+        </p>
+        <div class="field">
+          <label for="clear-password-input"><i class="fa fa-lock" aria-hidden="true"></i> Password</label>
+          <div class="password-wrap">
+            <input type="password" id="clear-password-input" placeholder="Enter your password" autocomplete="current-password">
+            <button type="button" class="toggle-password" onclick="toggleClearPasswordVisibility()" aria-label="Show password">
+              <i class="fa fa-eye" id="clear-password-toggle-icon" aria-hidden="true"></i>
+            </button>
+          </div>
+        </div>
+        <div class="error-banner" id="clear-password-error" style="display:none;">
+          <i class="fa fa-exclamation-triangle" aria-hidden="true"></i>
+          <span id="clear-password-error-text">Incorrect password. Please try again.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeClearPasswordModal()">Cancel</button>
+        <button class="btn btn-danger" id="clear-confirm-btn" onclick="confirmClearAll()">
+          <i class="fa fa-trash" aria-hidden="true"></i> Permanently Delete
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.CURRENT_FILTER = "{{ filter_type }}";
+    window.CURRENT_DATE_FILTER = "{{ date_filter }}";
+
+    window.TUTORIAL_STEPS = [
+      {
+        icon: "fa-desktop",
+        title: "Welcome, SMRT Staff!",
+        text: "This dashboard lets you review every inspection technicians submit, confirm plate and odometer readings, and export everything to Excel."
+      },
+      {
+        icon: "fa-filter",
+        title: "Filter by Vehicle Type",
+        text: "Use the All / Car / Bus / Double Decker Bus pills at the top to narrow down what you're reviewing. The number in brackets shows how many records are in each group."
+      },
+      {
+        icon: "fa-calendar",
+        title: "Filter by Date",
+        text: "Below that, use <strong>All Dates</strong>, <strong>Today</strong>, or <strong>This Week</strong> to focus on recent inspections only. It combines with the vehicle type filter above."
+      },
+      {
+        icon: "fa-chevron-down",
+        title: "Cards Start Minimized",
+        text: "With lots of inspections, cards are collapsed by default so the list stays easy to scan. Click anywhere on a card's header to expand or collapse just that one."
+      },
+      {
+        icon: "fa-expand",
+        title: "Expand or Collapse All",
+        text: "Use the <strong>Expand All</strong> / <strong>Collapse All</strong> button in the toolbar to open or close every card at once."
+      },
+      {
+        icon: "fa-picture-o",
+        title: "Review the Photos",
+        text: "Each card shows the plate and odometer photos the technician took. Type what you see into the box underneath each photo."
+      },
+      {
+        icon: "fa-wrench",
+        title: "See Who Submitted It",
+        text: "Each card shows which technician entered the inspection, so you know who to follow up with if anything looks unclear."
+      },
+      {
+        icon: "fa-table",
+        title: "Tyre Tread Readings",
+        text: "Tyre depths for every wheel position are listed in a small table further down each card. Readings under 3mm are flagged in red."
+      },
+      {
+        icon: "fa-download",
+        title: "Download the Spreadsheet",
+        text: "Once every plate/odometer text box is filled in for the vehicles you're viewing, tap <strong>Download Spreadsheet</strong> to export an Excel file. If anything is still blank, the app highlights it and blocks the download."
+      },
+      {
+        icon: "fa-trash",
+        title: "Clear All Data (Use with Care)",
+        text: "<strong>Clear All Data</strong> permanently deletes every inspection in the database — not just what's on screen. Always download a spreadsheet backup first. You'll get a warning, and then have to re-enter your password, before anything is deleted."
+      },
+      {
+        icon: "fa-check-circle",
+        title: "You're All Set!",
+        text: "That's the whole workflow. Tap <strong>Finish</strong> or <strong>Close Tutorial</strong> whenever you're ready."
+      }
+    ];
+  </script>
+  <script src="{{ url_for('static', filename='js/tutorial.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/staff.js') }}"></script>
+</body>
+</html>

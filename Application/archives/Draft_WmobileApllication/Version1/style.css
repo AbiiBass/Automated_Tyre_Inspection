@@ -1,0 +1,688 @@
+/* ===========================
+   SMRT Tyre Inspection
+   style.css
+=========================== */
+
+*{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+    font-family:'Poppins',sans-serif;
+}
+
+body{
+    background:#eef2f7;
+    color:#333;
+}
+
+/* Pages */
+
+.page{
+    width:100%;
+    min-height:100vh;
+}
+
+.hidden{
+    display:none !important;
+}
+
+/* ===========================
+        LOGIN
+=========================== */
+
+#loginPage{
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    height:100vh;
+}
+
+.login-card{
+
+    width:350px;
+
+    background:white;
+
+    border-radius:20px;
+
+    padding:35px;
+
+    text-align:center;
+
+    box-shadow:0 10px 30px rgba(0,0,0,0.15);
+
+}
+
+.login-card h1{
+
+    font-size:60px;
+    margin-bottom:10px;
+
+}
+
+.login-card h2{
+
+    margin-bottom:5px;
+
+}
+
+.login-card p{
+
+    color:gray;
+    margin-bottom:25px;
+
+}
+
+.login-card input{
+
+    width:100%;
+    padding:14px;
+
+    border:none;
+    outline:none;
+
+    border-radius:10px;
+
+    background:#f1f3f6;
+
+    margin-bottom:20px;
+
+    font-size:16px;
+
+}
+
+.login-card button{
+
+    width:100%;
+
+    padding:14px;
+
+    border:none;
+
+    background:#1976d2;
+
+    color:white;
+
+    border-radius:10px;
+
+    cursor:pointer;
+
+    font-size:16px;
+
+    transition:.25s;
+
+}
+
+.login-card button:hover{
+
+    background:#125ca5;
+
+}
+
+/* ===========================
+        HEADER
+=========================== */
+
+header{
+
+    background:white;
+
+    padding:18px;
+
+    display:flex;
+
+    justify-content:space-between;
+
+    align-items:center;
+
+    box-shadow:0 3px 10px rgba(0,0,0,.08);
+
+    position:sticky;
+
+    top:0;
+
+    z-index:5;
+
+}
+
+header h2{
+
+    font-weight:600;
+
+}
+
+header small{
+
+    color:gray;
+
+}
+
+header button{
+
+    border:none;
+
+    cursor:pointer;
+
+    background:none;
+
+    font-size:22px;
+
+}
+
+/* ===========================
+        EXPORT BUTTON
+=========================== */
+
+.exportBtn{
+
+    background:#1976d2;
+
+    color:white;
+
+    border:none;
+
+    padding:10px 18px;
+
+    border-radius:10px;
+
+    cursor:pointer;
+
+}
+
+/* ===========================
+        CARD LIST
+=========================== */
+
+#inspectionList{
+
+    padding:20px;
+
+}
+
+.card{
+
+    background:white;
+
+    border-radius:18px;
+
+    padding:18px;
+
+    margin-bottom:18px;
+
+    display:flex;
+
+    justify-content:space-between;
+
+    align-items:center;
+
+    box-shadow:0 5px 15px rgba(0,0,0,.08);
+
+    cursor:pointer;
+
+    transition:.25s;
+
+}
+
+.card:hover{
+
+    transform:translateY(-4px);
+
+}
+
+.card-left{
+
+    display:flex;
+
+    align-items:center;
+
+    gap:15px;
+
+}
+
+.card-icon{
+
+    width:65px;
+
+    height:65px;
+
+    border-radius:50%;
+
+    display:flex;
+
+    justify-content:center;
+
+    align-items:center;
+
+    color:white;
+
+    font-size:34px;
+
+}
+
+/* Vehicle Colours */
+
+.car{
+
+    background:#ff5da8;
+
+}
+
+.single{
+
+    background:#43a047;
+
+}
+
+.double{
+
+    background:#757575;
+
+}
+
+.card-right{
+
+    text-align:right;
+
+    font-size:13px;
+
+    color:gray;
+
+}
+
+/* ===========================
+        FLOAT BUTTON
+=========================== */
+
+.fab{
+
+    position:fixed;
+
+    right:25px;
+
+    bottom:25px;
+
+    width:65px;
+
+    height:65px;
+
+    border:none;
+
+    border-radius:50%;
+
+    background:#1976d2;
+
+    color:white;
+
+    font-size:40px;
+
+    cursor:pointer;
+
+    box-shadow:0 8px 20px rgba(0,0,0,.25);
+
+    transition:.25s;
+
+}
+
+.fab:hover{
+
+    transform:scale(1.08);
+
+}
+
+/* ===========================
+        POPUP
+=========================== */
+
+.popup{
+
+    position:fixed;
+    inset:0;
+
+    display:none;
+
+    justify-content:center;
+    align-items:center;
+
+    background:rgba(0,0,0,.5);
+
+    z-index:100;
+
+}
+
+.popup:not(.hidden){
+
+    display:flex;
+
+}
+
+.popup-card{
+
+    background:white;
+
+    width:90%;
+
+    max-width:500px;
+
+    border-radius:20px;
+
+    padding:30px;
+
+    text-align:center;
+
+}
+
+/* ===========================
+      VEHICLE SELECT
+=========================== */
+
+.vehicle-options{
+
+    display:flex;
+
+    justify-content:space-around;
+
+    margin:25px 0;
+
+}
+
+.vehicle-card{
+
+    width:120px;
+
+    padding:18px;
+
+    border-radius:15px;
+
+    background:#f5f7fa;
+
+    cursor:pointer;
+
+    transition:.25s;
+
+}
+
+.vehicle-card:hover{
+
+    background:#e6eef8;
+
+    transform:translateY(-4px);
+
+}
+
+.vehicle-card .material-icons{
+
+    font-size:48px;
+
+}
+
+.pink{
+
+    color:#ff5da8;
+
+}
+
+.green{
+
+    color:#43a047;
+
+}
+
+.whiteBus{
+
+    color:#757575;
+
+}
+
+/* ===========================
+       FORM
+=========================== */
+
+.form-container{
+
+    padding:25px;
+
+}
+
+.form-container h3{
+
+    margin-top:20px;
+
+    margin-bottom:10px;
+
+}
+
+.image-upload{
+
+    background:white;
+
+    border:2px dashed #bbb;
+
+    border-radius:15px;
+
+    padding:18px;
+
+}
+
+.image-upload input{
+
+    width:100%;
+
+}
+
+/* ===========================
+       TYRES
+=========================== */
+
+.tyre-card{
+
+    background:white;
+
+    border-radius:15px;
+
+    padding:18px;
+
+    margin-top:18px;
+
+    box-shadow:0 5px 12px rgba(0,0,0,.08);
+
+}
+
+.tyre-card h4{
+
+    margin-bottom:12px;
+
+}
+
+.tyre-card input{
+
+    width:100%;
+
+    margin-top:10px;
+
+    padding:12px;
+
+    border:none;
+
+    background:#f3f5f8;
+
+    border-radius:10px;
+
+}
+
+/* ===========================
+       SUBMIT
+=========================== */
+
+.submitBtn{
+
+    width:100%;
+
+    margin-top:30px;
+
+    padding:15px;
+
+    border:none;
+
+    border-radius:12px;
+
+    background:#43a047;
+
+    color:white;
+
+    font-size:17px;
+
+    cursor:pointer;
+
+    transition:.25s;
+
+}
+
+.submitBtn:hover{
+
+    background:#2e7d32;
+
+}
+
+/* ===========================
+       DETAILS
+=========================== */
+
+.details-card{
+
+    margin:20px;
+
+    padding:25px;
+
+    background:white;
+
+    border-radius:20px;
+
+    box-shadow:0 5px 15px rgba(0,0,0,.08);
+
+    line-height:1.9;
+
+}
+
+/* ===========================
+      POPUP BUTTONS
+=========================== */
+
+.popup-buttons{
+
+    display:flex;
+
+    justify-content:center;
+
+    gap:15px;
+
+    margin-top:25px;
+
+}
+
+.confirmBtn{
+
+    background:#43a047;
+
+    color:white;
+
+    border:none;
+
+    padding:12px 22px;
+
+    border-radius:10px;
+
+    cursor:pointer;
+
+}
+
+.cancelBtn{
+
+    background:#e53935;
+
+    color:white;
+
+    border:none;
+
+    padding:12px 22px;
+
+    border-radius:10px;
+
+    cursor:pointer;
+
+}
+
+/* ===========================
+      SCROLLBAR
+=========================== */
+
+::-webkit-scrollbar{
+
+    width:8px;
+
+}
+
+::-webkit-scrollbar-thumb{
+
+    background:#bdbdbd;
+
+    border-radius:20px;
+
+}
+
+::-webkit-scrollbar-track{
+
+    background:#eceff1;
+
+}
+
+/* ===========================
+     RESPONSIVE
+=========================== */
+
+@media(max-width:600px){
+
+header{
+
+    padding:15px;
+
+}
+
+.vehicle-options{
+
+    flex-direction:column;
+
+    gap:15px;
+
+    align-items:center;
+
+}
+
+.vehicle-card{
+
+    width:80%;
+
+}
+
+.login-card{
+
+    width:90%;
+
+}
+
+.card{
+
+    flex-direction:column;
+
+    align-items:flex-start;
+
+    gap:15px;
+
+}
+
+.card-right{
+
+    text-align:left;
+
+}
+
+}

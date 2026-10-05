@@ -1,0 +1,27 @@
+<div class="tutorial-overlay" id="tutorial-overlay">
+  <div class="tutorial-sheet">
+    <div class="tutorial-header">
+      <span><i class="fa fa-graduation-cap" aria-hidden="true"></i> Tutorial</span>
+      <button class="modal-close" onclick="closeTutorial()" aria-label="Close tutorial">✕</button>
+    </div>
+    <div class="tutorial-body">
+      <div class="tutorial-icon-badge" id="tutorial-icon-badge"><i class="fa" id="tutorial-icon"></i></div>
+      <div class="tutorial-step-label" id="tutorial-progress-label"></div>
+      <div class="tutorial-step-title" id="tutorial-step-title"></div>
+      <div class="tutorial-step-text" id="tutorial-step-text"></div>
+      <div class="tutorial-demo-slot" id="tutorial-demo-slot"></div>
+    </div>
+    <div class="tutorial-dots" id="tutorial-dots"></div>
+    <div class="tutorial-footer">
+      <div class="tutorial-nav-row">
+        <button class="btn btn-outline" id="tutorial-back-btn" onclick="tutorialBack()">
+          <i class="fa fa-arrow-left" aria-hidden="true"></i> Back
+        </button>
+        <button class="btn btn-primary" id="tutorial-next-btn" onclick="tutorialNext()">Next</button>
+      </div>
+      <button class="tutorial-close-link" onclick="closeTutorial()">
+        <i class="fa fa-times-circle" aria-hidden="true"></i> Close Tutorial
+      </button>
+    </div>
+  </div>
+</div>

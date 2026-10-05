@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+<title>SMRT Technician — Vehicle Inspections</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div class="hazard-rail"></div>
+  <div class="topbar">
+    <div class="brand"><span class="dot"></span> SMRT Inspections</div>
+    <div class="user-chip">
+      <span class="name">👋 {{ display_name }}</span>
+      <a class="logout-link" href="{{ url_for('logout') }}">Log Out</a>
+    </div>
+  </div>
+
+  <div class="tech-page">
+    <div class="tech-content">
+      <h2 class="section-title">Your Vehicle Inspections</h2>
+
+      <div id="vehicle-list">
+        {% if vehicles|length == 0 %}
+        <div class="empty-state" id="empty-state">
+          <div class="big-icon">🚗</div>
+          <h3>No inspections yet</h3>
+          <p>Tap the red "Add Vehicle" button below to record your first inspection.</p>
+        </div>
+        {% endif %}
+
+        {% for v in vehicles %}
+        {% set cfg = vehicle_config[v.vehicle_type] %}
+        <div class="vehicle-card" data-id="{{ v.id }}">
+          <div class="v-icon">
+            {% if v.vehicle_type == 'car' %}🚗
+            {% elif v.vehicle_type == 'bus' %}🚌
+            {% else %}🚎{% endif %}
+          </div>
+          {% if v.plate_image %}
+            <img class="v-plate-thumb" src="{{ v.plate_image }}" alt="Plate">
+          {% else %}
+            <div class="v-plate-thumb placeholder">No<br>Photo</div>
+          {% endif %}
+          <div class="v-info">
+            <div class="v-type">{{ cfg.label }}</div>
+            <div class="v-time">🕒 {{ v.last_edited }}</div>
+          </div>
+          <button class="card-menu-btn" onclick="toggleMenu(event, '{{ v.id }}')">⋮</button>
+          <div class="card-menu-popover" id="menu-{{ v.id }}">
+            <button onclick="editVehicle('{{ v.id }}')">✏️ Edit</button>
+            <button class="danger" onclick="deleteVehicle('{{ v.id }}')">🗑️ Delete</button>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="fab-wrap">
+    <button class="fab" onclick="openAddWizard()">
+      <span class="plus">+</span> Add Vehicle
+    </button>
+  </div>
+
+  <!-- =============== WIZARD MODAL =============== -->
+  <div class="modal-overlay" id="wizard-overlay">
+    <div class="modal-sheet">
+      <div class="modal-header">
+        <h3 id="wizard-title">New Inspection</h3>
+        <button class="modal-close" onclick="closeWizard()">✕</button>
+      </div>
+      <div class="step-progress" id="step-progress">
+        <div class="seg active" data-step="1"></div>
+        <div class="seg" data-step="2"></div>
+      </div>
+      <div class="modal-body" id="wizard-body">
+
+        <!-- STEP 1: choose vehicle type -->
+        <div class="wizard-step" id="step-1">
+          <div class="form-section">
+            <div class="fs-title">Choose the vehicle type</div>
+            <div class="fs-hint">Tap the picture that matches the vehicle you are inspecting.</div>
+            <div class="type-choice-grid">
+              <button type="button" class="type-card" data-type="car" onclick="selectType('car')">
+                <div class="icon">🚗</div>
+                <div class="label">Car</div>
+                <div class="sub">4 tyres</div>
+              </button>
+              <button type="button" class="type-card" data-type="bus" onclick="selectType('bus')">
+                <div class="icon">🚌</div>
+                <div class="label">Bus</div>
+                <div class="sub">6 tyres</div>
+              </button>
+              <button type="button" class="type-card" data-type="doubledecker" onclick="selectType('doubledecker')">
+                <div class="icon">🚎</div>
+                <div class="label">Double Decker Bus</div>
+                <div class="sub">10 tyres</div>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- STEP 2: full form -->
+        <div class="wizard-step" id="step-2" style="display:none;">
+
+          <div class="form-section">
+            <div class="fs-title"><span class="num">1</span> Vehicle License Plate Photo</div>
+            <div class="fs-hint">Take a clear picture of the plate. Line it up inside the gold rectangle.</div>
+            <div class="capture-box">
+              <img class="capture-preview plate-ratio" id="plate-preview" style="display:none;">
+              <button type="button" class="btn btn-gold" onclick="openCamera('plate')">📷 Take Plate Photo</button>
+            </div>
+          </div>
+
+          <div class="form-section">
+            <div class="fs-title"><span class="num">2</span> Odometer Photo</div>
+            <div class="fs-hint">Take a picture of the odometer display.</div>
+            <div class="capture-box">
+              <img class="capture-preview odo-ratio" id="odometer-preview" style="display:none;">
+              <button type="button" class="btn btn-gold" onclick="openCamera('odometer')">📷 Take Odometer Photo</button>
+            </div>
+          </div>
+
+          <div class="form-section">
+            <div class="fs-title"><span class="num">3</span> Tyre Tread Depth (mm)</div>
+            <div class="fs-hint">Tap a box to see which tyre it is on the diagram. Enter up to 2 decimal places.</div>
+            <div class="tyre-layout">
+              <div class="tyre-diagram" id="tyre-diagram"></div>
+              <div class="tyre-inputs" id="tyre-inputs"></div>
+            </div>
+          </div>
+
+          <div class="form-section">
+            <div class="fs-title"><span class="num">4</span> Last Edited</div>
+            <div class="readonly-field">
+              <span>Set automatically when you tap Complete</span>
+              <span>🔒</span>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <div class="modal-footer" id="wizard-footer">
+        <button class="btn btn-outline" id="back-btn" style="display:none;" onclick="goBackStep()">Back</button>
+        <button class="btn btn-primary" id="complete-btn" style="display:none;" onclick="submitInspection()">✓ Complete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =============== CAMERA MODAL =============== -->
+  <div class="camera-modal" id="camera-modal">
+    <div class="camera-stage">
+      <video id="camera-video" autoplay playsinline muted></video>
+      <div class="camera-caption" id="camera-caption">Align the plate inside the box</div>
+      <div class="camera-overlay-rect" id="camera-overlay-rect"></div>
+    </div>
+    <div class="camera-controls">
+      <button class="camera-cancel" onclick="closeCamera()">Cancel</button>
+      <button class="shutter-btn" onclick="captureShot()"></button>
+      <div style="width:60px;"></div>
+    </div>
+  </div>
+  <canvas id="capture-canvas" style="display:none;"></canvas>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    window.VEHICLE_CONFIG = {{ vehicle_config|tojson }};
+  </script>
+  <script src="{{ url_for('static', filename='js/technician.js') }}"></script>
+</body>
+</html>

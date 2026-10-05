@@ -1,0 +1,11 @@
+# Optional — only needed for the "Ask AI" license-plate-reading button on
+# the SMRT Staff dashboard (license_plate.py). The rest of the app runs
+# fine without these installed; that button will just show a friendly
+# "not installed" message until you install this file:
+#
+#   pip install -r requirements-ocr.txt
+#
+paddleocr
+paddlepaddle
+opencv-python
+numpy

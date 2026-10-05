@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SMRT Staff — Inspection Dashboard</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div class="hazard-rail"></div>
+  <div class="topbar">
+    <div class="brand"><span class="dot"></span> SMRT Inspection Dashboard</div>
+    <div class="user-chip">
+      <span class="name">👋 {{ display_name }}</span>
+      <a class="logout-link" href="{{ url_for('logout') }}">Log Out</a>
+    </div>
+  </div>
+
+  <div class="staff-page">
+    <div class="staff-toolbar">
+      <div class="filter-pills">
+        <a class="filter-pill {{ 'active' if filter_type == 'all' else '' }}" href="{{ url_for('staff_home', type='all') }}">
+          🚦 All <span class="count">({{ counts.all }})</span>
+        </a>
+        <a class="filter-pill {{ 'active' if filter_type == 'car' else '' }}" href="{{ url_for('staff_home', type='car') }}">
+          🚗 Car <span class="count">({{ counts.car }})</span>
+        </a>
+        <a class="filter-pill {{ 'active' if filter_type == 'bus' else '' }}" href="{{ url_for('staff_home', type='bus') }}">
+          🚌 Bus <span class="count">({{ counts.bus }})</span>
+        </a>
+        <a class="filter-pill {{ 'active' if filter_type == 'doubledecker' else '' }}" href="{{ url_for('staff_home', type='doubledecker') }}">
+          🚎 Double Decker <span class="count">({{ counts.doubledecker }})</span>
+        </a>
+      </div>
+      <button class="btn btn-primary" style="width:auto;" onclick="downloadSheet()">⬇ Download Spreadsheet</button>
+    </div>
+
+    <div class="staff-content">
+      {% if vehicles|length == 0 %}
+      <div class="no-results">
+        <div class="big-icon">📋</div>
+        <h3>No inspections in this category yet</h3>
+        <p>Once technicians submit inspections, they will appear here.</p>
+      </div>
+      {% else %}
+      <div class="staff-grid">
+        {% for v in vehicles %}
+        {% set cfg = vehicle_config[v.vehicle_type] %}
+        <div class="inspection-card" data-id="{{ v.id }}">
+          <div class="ic-header">
+            <div class="v-icon-sm">
+              {% if v.vehicle_type == 'car' %}🚗
+              {% elif v.vehicle_type == 'bus' %}🚌
+              {% else %}🚎{% endif %}
+            </div>
+            <div>
+              <div class="ic-type">{{ cfg.label }}</div>
+              <div class="ic-time">🕒 {{ v.last_edited }}</div>
+              <div class="ic-tech">🔧 Entered by {{ v.added_by or "Unknown" }}</div>
+            </div>
+          </div>
+          <div class="ic-body">
+
+            <div class="ic-image-block">
+              <div class="ib-label">License Plate</div>
+              {% if v.plate_image %}
+              <img class="plate-img" src="{{ v.plate_image }}" alt="Plate photo">
+              {% endif %}
+              <input type="text"
+                     class="plate-text-input {{ '' if v.plate_text else 'needs-fill' }}"
+                     placeholder="Type the plate number shown above"
+                     value="{{ v.plate_text }}"
+                     data-field="plate_text"
+                     onchange="saveText('{{ v.id }}', 'plate_text', this)">
+              <div class="save-hint" id="hint-plate-{{ v.id }}"></div>
+            </div>
+
+            <div class="ic-image-block">
+              <div class="ib-label">Odometer</div>
+              {% if v.odometer_image %}
+              <img class="odo-img" src="{{ v.odometer_image }}" alt="Odometer photo">
+              {% endif %}
+              <input type="text"
+                     class="odometer-text-input {{ '' if v.odometer_text else 'needs-fill' }}"
+                     placeholder="Type the odometer reading shown above (km)"
+                     value="{{ v.odometer_text }}"
+                     data-field="odometer_text"
+                     onchange="saveText('{{ v.id }}', 'odometer_text', this)">
+              <div class="save-hint" id="hint-odo-{{ v.id }}"></div>
+            </div>
+
+            <div class="ic-tyres">
+              <div class="ib-label">Tyre Tread Depth (mm)</div>
+              <table>
+                {% for row in cfg.rows %}
+                  {% for t in row.left + row.right %}
+                  <tr>
+                    <td class="t-label">{{ t.label }}</td>
+                    <td class="t-val {{ 'low' if v.tyres.get(t.code) is not none and v.tyres.get(t.code)|float < 3 else '' }}">
+                      {{ v.tyres.get(t.code, '—') }} mm
+                    </td>
+                  </tr>
+                  {% endfor %}
+                {% endfor %}
+              </table>
+            </div>
+
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    window.CURRENT_FILTER = "{{ filter_type }}";
+  </script>
+  <script src="{{ url_for('static', filename='js/staff.js') }}"></script>
+</body>
+</html>

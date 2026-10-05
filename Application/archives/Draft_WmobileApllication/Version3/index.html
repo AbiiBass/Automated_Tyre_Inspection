@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>SMRT Fleet Check</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============ LOGIN SCREEN ============ -->
+<section id="login-screen" class="screen">
+  <div class="login-card">
+    <div class="brand">
+      <div class="brand-badge">🚌</div>
+      <h1>SMRT Fleet Check</h1>
+      <p class="muted">Daily vehicle inspection</p>
+    </div>
+
+    <label class="field-label" for="staff-id">Staff ID</label>
+    <input id="staff-id" class="text-input big" type="text" inputmode="text" placeholder="e.g. E1001" autocomplete="off">
+    <button id="login-btn" class="btn btn-primary big">Sign In</button>
+    <p id="login-error" class="error-text hidden">ID not recognised. Please check and try again.</p>
+
+    <div class="csv-connect">
+      <button id="connect-csv-btn" class="btn btn-ghost small">📁 Connect vehicles.csv (optional)</button>
+      <p id="connect-status" class="muted tiny">Not connected — changes will be saved in this browser only, plus you can export/import CSV manually.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ MAIN APP (CARD LIST) ============ -->
+<section id="app-screen" class="screen hidden">
+  <header class="app-header">
+    <div>
+      <div class="app-title">Fleet Check</div>
+      <div class="app-sub" id="welcome-text">Hi there</div>
+    </div>
+    <div class="header-actions">
+      <button id="export-btn" class="icon-btn" title="Export CSV">⬇️</button>
+      <button id="import-btn" class="icon-btn" title="Import CSV">⬆️</button>
+      <button id="logout-btn" class="icon-btn" title="Sign out">🚪</button>
+    </div>
+  </header>
+
+  <div id="card-list" class="card-list"></div>
+  <div id="empty-state" class="empty-state hidden">
+    <div class="empty-icon">📋</div>
+    <p>No inspections yet.</p>
+    <p class="muted tiny">Tap the + button to add your first vehicle check.</p>
+  </div>
+
+  <button id="add-fab" class="fab" title="Add inspection">+</button>
+  <input type="file" id="import-file-input" accept=".csv" class="hidden">
+</section>
+
+<!-- ============ VEHICLE TYPE PICKER MODAL ============ -->
+<div id="type-modal" class="modal-overlay hidden">
+  <div class="modal-sheet">
+    <h2>What are you inspecting?</h2>
+    <p class="muted">Choose a vehicle type to begin</p>
+    <div class="type-grid">
+      <button class="type-option" data-type="car">
+        <span class="type-icon" style="background:#FF6FA4">🚗</span>
+        <span>Car</span>
+      </button>
+      <button class="type-option" data-type="single-bus">
+        <span class="type-icon" style="background:#3CB878">🚌</span>
+        <span>Single Bus</span>
+      </button>
+      <button class="type-option" data-type="double-decker">
+        <span class="type-icon" style="background:#FFFFFF; border:2px solid #16324F;">🚍</span>
+        <span>Double Decker</span>
+      </button>
+    </div>
+    <button class="btn btn-ghost" id="type-cancel-btn">Cancel</button>
+  </div>
+</div>
+
+<!-- ============ INSPECTION FORM (FULL SCREEN) ============ -->
+<section id="form-screen" class="screen hidden">
+  <header class="form-header">
+    <button id="form-back-btn" class="back-btn light">← Back</button>
+    <div class="form-header-title">
+      <span id="form-type-icon">🚗</span>
+      <span id="form-title-text">New Inspection</span>
+    </div>
+    <span class="form-header-spacer"></span>
+  </header>
+
+  <div id="form-body" class="form-body">
+    <!-- Populated by JS: plate photo, odometer photo, tyre fields -->
+  </div>
+
+  <div class="form-footer">
+    <button id="submit-inspection-btn" class="btn btn-primary big">Submit Inspection</button>
+  </div>
+</section>
+
+<!-- ============ CAMERA SCREEN (FULL SCREEN) ============ -->
+<section id="camera-screen" class="screen hidden camera-screen">
+  <video id="camera-video" autoplay playsinline muted></video>
+  <div id="camera-guide" class="camera-guide"></div>
+  <p id="camera-hint" class="camera-hint"></p>
+  <div class="camera-controls">
+    <button id="camera-cancel-btn" class="btn btn-ghost light">Cancel</button>
+    <button id="camera-shutter-btn" class="shutter-btn" title="Capture"></button>
+    <span class="camera-controls-spacer"></span>
+  </div>
+  <canvas id="camera-canvas" class="hidden"></canvas>
+</section>
+
+<!-- ============ PHOTO REVIEW MODAL ============ -->
+<div id="photo-review-modal" class="modal-overlay hidden">
+  <div class="modal-sheet">
+    <h2 id="photo-review-title">Use this photo?</h2>
+    <img id="photo-review-img" class="photo-preview" alt="Captured photo preview">
+    <div class="btn-row">
+      <button id="photo-retake-btn" class="btn btn-ghost">Retake</button>
+      <button id="photo-confirm-btn" class="btn btn-primary">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ CONFIRM SUBMIT MODAL ============ -->
+<div id="confirm-modal" class="modal-overlay hidden">
+  <div class="modal-sheet center-text">
+    <div class="confirm-icon">✅</div>
+    <h2>Confirm to submit?</h2>
+    <p class="muted">Please double check the details before submitting.</p>
+    <div class="btn-row">
+      <button id="confirm-cancel-btn" class="btn btn-ghost">Cancel</button>
+      <button id="confirm-ok-btn" class="btn btn-primary">OK, Submit</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ DELETE CONFIRM MODAL ============ -->
+<div id="delete-modal" class="modal-overlay hidden">
+  <div class="modal-sheet center-text">
+    <div class="confirm-icon">🗑️</div>
+    <h2>Delete this record?</h2>
+    <p class="muted">This cannot be undone.</p>
+    <div class="btn-row">
+      <button id="delete-cancel-btn" class="btn btn-ghost">Cancel</button>
+      <button id="delete-ok-btn" class="btn btn-danger">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ DETAIL VIEW MODAL ============ -->
+<div id="detail-modal" class="modal-overlay hidden">
+  <div class="modal-sheet detail-sheet">
+    <div class="detail-header">
+      <button id="detail-close-btn" class="back-btn">← Back</button>
+      <h2 id="detail-title">Vehicle Details</h2>
+      <span class="detail-header-spacer"></span>
+    </div>
+    <div id="detail-body" class="detail-body"></div>
+    <div class="btn-row">
+      <button id="detail-delete-btn" class="btn btn-danger">Delete</button>
+      <button id="detail-edit-btn" class="btn btn-primary">Edit</button>
+    </div>
+    <p id="detail-lock-note" class="muted tiny hidden">🔒 Editing is locked — more than 24 hours have passed since submission.</p>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

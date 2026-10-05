@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SMRT Staff — Manage Employees</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div class="hazard-rail"></div>
+  <div class="topbar">
+    <div class="brand"><span class="dot"></span> SMRT Inspection Dashboard</div>
+    <div class="topbar-actions">
+      <div class="user-chip">
+        <span class="name"><i class="fa fa-user-circle" aria-hidden="true"></i> {{ display_name }}</span>
+        <a class="logout-link" href="{{ url_for('logout') }}"><i class="fa fa-sign-out" aria-hidden="true"></i> Log Out</a>
+      </div>
+    </div>
+  </div>
+
+  {% include "_staff_nav.html" %}
+
+  <div class="staff-page">
+    <div class="employees-content">
+      <div class="employees-header">
+        <div>
+          <h2 class="section-title">Manage Employees</h2>
+          <p class="section-subtitle"><i class="fa fa-info-circle" aria-hidden="true"></i>
+            Add, edit, or remove technician and SMRT staff accounts. New employees start
+            with the default password <strong>1234</strong>.
+          </p>
+        </div>
+        <button class="btn btn-primary" style="width:auto;" onclick="openAddEmployeeModal()">
+          <i class="fa fa-user-plus" aria-hidden="true"></i> Add Employee
+        </button>
+      </div>
+
+      <div class="employees-table-wrap">
+        <table class="employees-table" id="employees-table">
+          <thead>
+            <tr>
+              <th>Full Name</th>
+              <th>Username</th>
+              <th>Position</th>
+              <th class="actions-col">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="employees-tbody">
+            {% for emp in employees %}
+            <tr data-username="{{ emp.username }}">
+              <td class="emp-name">{{ emp.name }}</td>
+              <td class="emp-username">
+                {{ emp.username }}
+                {% if emp.username == my_username %}<span class="you-badge">You</span>{% endif %}
+              </td>
+              <td>
+                <span class="position-badge position-{{ emp.role }}">
+                  {{ "Technician" if emp.role == "technician" else "SMRT Staff" }}
+                </span>
+              </td>
+              <td class="actions-col">
+                {% if emp.username == my_username %}
+                <span class="self-hint">Edit in My Profile</span>
+                {% else %}
+                <button class="icon-btn" title="Edit" onclick="openEditEmployeeModal('{{ emp.username }}', '{{ emp.name|e }}', '{{ emp.role }}')">
+                  <i class="fa fa-pencil" aria-hidden="true"></i>
+                </button>
+                <button class="icon-btn icon-btn-danger" title="Delete" onclick="deleteEmployee('{{ emp.username }}', '{{ emp.name|e }}')">
+                  <i class="fa fa-trash" aria-hidden="true"></i>
+                </button>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div class="no-results" id="no-employees" style="display:none;">
+          <div class="big-icon">👥</div>
+          <h3>No employees yet</h3>
+          <p>Tap "Add Employee" to create the first account.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =============== ADD / EDIT EMPLOYEE MODAL =============== -->
+  <div class="modal-overlay" id="employee-modal-overlay">
+    <div class="modal-sheet" style="max-width:480px;">
+      <div class="modal-header">
+        <h3 id="employee-modal-title"><i class="fa fa-user-plus" aria-hidden="true"></i> Add Employee</h3>
+        <button class="modal-close" onclick="closeEmployeeModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="error-banner" id="employee-form-error" style="display:none;">
+          <i class="fa fa-exclamation-triangle" aria-hidden="true"></i>
+          <span id="employee-form-error-text"></span>
+        </div>
+        <div class="field">
+          <label for="employee-name-input"><i class="fa fa-user" aria-hidden="true"></i> Full Name</label>
+          <input type="text" id="employee-name-input" placeholder="e.g. Tan Wei Ming">
+        </div>
+        <div class="field">
+          <label for="employee-username-input"><i class="fa fa-at" aria-hidden="true"></i> Username</label>
+          <input type="text" id="employee-username-input" placeholder="e.g. tech3">
+        </div>
+        <div class="field">
+          <label for="employee-role-select"><i class="fa fa-briefcase" aria-hidden="true"></i> Position</label>
+          <select id="employee-role-select" class="employee-role-select">
+            <option value="technician">Technician</option>
+            <option value="staff">SMRT Staff</option>
+          </select>
+        </div>
+        <div class="hint-box" id="employee-password-hint">
+          <i class="fa fa-info-circle" aria-hidden="true"></i>
+          New employees are given the default password <strong>1234</strong>. They can change
+          it themselves later from My Profile once they log in.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeEmployeeModal()">Cancel</button>
+        <button class="btn btn-primary" id="employee-submit-btn" onclick="submitEmployeeForm()">
+          <i class="fa fa-check" aria-hidden="true"></i> Submit
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =============== DELETE CONFIRM MODAL =============== -->
+  <div class="modal-overlay" id="delete-employee-overlay">
+    <div class="modal-sheet danger-sheet">
+      <div class="modal-header danger-header">
+        <h3><i class="fa fa-exclamation-triangle" aria-hidden="true"></i> Delete Employee</h3>
+        <button class="modal-close" onclick="closeDeleteEmployeeModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="danger-text" id="delete-employee-text"></p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeDeleteEmployeeModal()">Cancel</button>
+        <button class="btn btn-danger" id="delete-employee-confirm-btn" onclick="confirmDeleteEmployee()">
+          <i class="fa fa-trash" aria-hidden="true"></i> Delete
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    window.MY_USERNAME = {{ my_username|tojson }};
+  </script>
+  <script src="{{ url_for('static', filename='js/employees.js') }}"></script>
+</body>
+</html>

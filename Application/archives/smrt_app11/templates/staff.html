@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SMRT Staff — Inspection Dashboard</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div class="hazard-rail"></div>
+  <div class="topbar">
+    <div class="brand"><img class="brand-logo" src="{{ url_for('static', filename='img/smrt-logo.png') }}" alt="SMRT"> SMRT Inspection Dashboard</div>
+    <div class="topbar-actions">
+      <button class="time-format-toggle" onclick="toggleTimeFormat()" title="Toggle between relative and exact time">
+        <i class="fa fa-clock-o" aria-hidden="true"></i> <span class="tf-label">Relative Time</span>
+      </button>
+      <button class="btn-tutorial" onclick="openTutorial()">
+        <i class="fa fa-graduation-cap" aria-hidden="true"></i> Tutorial
+      </button>
+      <div class="user-menu">
+        <button class="user-chip-btn" onclick="toggleUserMenu(event)">
+          <span class="name"><i class="fa fa-user-circle" aria-hidden="true"></i> {{ display_name }}</span>
+          <i class="fa fa-caret-down" aria-hidden="true"></i>
+        </button>
+        <div class="user-menu-popover" id="user-menu-popover">
+          <a href="{{ url_for('logout') }}"><i class="fa fa-sign-out" aria-hidden="true"></i> Log Out</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% include "_staff_nav.html" %}
+
+  <div class="staff-page">
+    <div class="staff-toolbar">
+      <div class="filter-pills">
+        <div class="pill-group" id="type-pill-group">
+          <button type="button" class="filter-pill active" data-pill="all" onclick="togglePill('all')">
+            🚦 All <span class="count">({{ counts.all }})</span>
+          </button>
+          <button type="button" class="filter-pill" data-pill="type:car" onclick="togglePill('type', 'car')">
+            <img src="{{ url_for('static', filename='img/car.png') }}" alt=""> Car <span class="count">({{ counts.car }})</span>
+          </button>
+          <button type="button" class="filter-pill" data-pill="type:bus" onclick="togglePill('type', 'bus')">
+            <img src="{{ url_for('static', filename='img/bus.png') }}" alt=""> Bus <span class="count">({{ counts.bus }})</span>
+          </button>
+          <button type="button" class="filter-pill" data-pill="type:doubledecker" onclick="togglePill('type', 'doubledecker')">
+            <img src="{{ url_for('static', filename='img/double-decker-bus.png') }}" alt=""> Double Decker <span class="count">({{ counts.doubledecker }})</span>
+          </button>
+        </div>
+        <div class="pill-divider"></div>
+        <div class="pill-group" id="route-pill-group">
+          <button type="button" class="filter-pill route-pill-feeder" data-pill="route:feeder" onclick="togglePill('route', 'feeder')">
+            <i class="fa fa-map-signs" aria-hidden="true"></i> Feeder Route <span class="count">({{ counts.feeder }})</span>
+          </button>
+          <button type="button" class="filter-pill route-pill-trunk" data-pill="route:trunk" onclick="togglePill('route', 'trunk')">
+            <i class="fa fa-road" aria-hidden="true"></i> Trunk Route <span class="count">({{ counts.trunk }})</span>
+          </button>
+        </div>
+      </div>
+      <div class="toolbar-right-actions">
+        <select class="sort-select" id="sort-select" onchange="applySort(this.value)">
+          <option value="last_edited">Sort: Newest First</option>
+          <option value="last_edited_oldest">Sort: Oldest First</option>
+          <option value="plate">Sort: License Plate (A–Z)</option>
+          <option value="plate_desc">Sort: License Plate (Z–A)</option>
+        </select>
+        <button class="btn btn-outline" id="expand-toggle-btn" style="width:auto;" onclick="toggleExpandAll()">
+          <i class="fa fa-expand" aria-hidden="true" id="expand-toggle-icon"></i>
+          <span id="expand-toggle-label">Expand All</span>
+        </button>
+        <button class="btn-ai-bulk" id="convert-all-plate-btn" onclick="openConvertAllWarning('plate')">
+          <i class="fa fa-magic" aria-hidden="true"></i> Convert All Plates
+        </button>
+        <button class="btn-ai-bulk" id="convert-all-odometer-btn" onclick="openConvertAllWarning('odometer')">
+          <i class="fa fa-magic" aria-hidden="true"></i> Convert All Odometers
+        </button>
+        <button class="btn btn-primary" style="width:auto;" onclick="downloadSheet()">
+          <i class="fa fa-download" aria-hidden="true"></i> Download Spreadsheet
+        </button>
+      </div>
+    </div>
+
+    <div class="staff-toolbar-secondary">
+      <div class="date-pills">
+        <span class="date-pills-label"><i class="fa fa-calendar" aria-hidden="true"></i> Show:</span>
+        <a class="date-pill {{ 'active' if date_filter == 'all' else '' }}" href="{{ url_for('staff_home', date_filter='all') }}">All Dates</a>
+        <a class="date-pill {{ 'active' if date_filter == 'today' else '' }}" href="{{ url_for('staff_home', date_filter='today') }}">Today</a>
+        <a class="date-pill {{ 'active' if date_filter == 'week' else '' }}" href="{{ url_for('staff_home', date_filter='week') }}">This Week</a>
+        <div class="date-range-wrap">
+          <button class="date-pill {{ 'active' if date_filter == 'range' else '' }}" id="date-range-pill" onclick="toggleDateRangePopover(event)">
+            <i class="fa fa-calendar-o" aria-hidden="true"></i>
+            {% if date_filter == 'range' and range_start and range_end %}
+              {{ range_start }} → {{ range_end }}
+            {% else %}
+              Select Range
+            {% endif %}
+          </button>
+          <div class="date-range-popover" id="date-range-popover">
+            <div class="field">
+              <label for="range-start-input">From</label>
+              <input type="date" id="range-start-input" value="{{ range_start }}">
+            </div>
+            <div class="field">
+              <label for="range-end-input">To</label>
+              <input type="date" id="range-end-input" value="{{ range_end }}">
+            </div>
+            <div class="date-range-popover-actions">
+              <button class="btn btn-outline" onclick="closeDateRangePopover()">Cancel</button>
+              <button class="btn btn-primary" onclick="applyDateRange()">Apply</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="toolbar-right-actions">
+        <button class="cancel-selection-link" id="cancel-selection-btn" style="display:none;" onclick="disableSelectionMode()">
+          <i class="fa fa-times" aria-hidden="true"></i> Cancel Selection
+        </button>
+        <button class="btn-danger-outline" id="delete-selected-btn" style="display:none;" onclick="openDeleteSelectedWarning()">
+          <i class="fa fa-trash" aria-hidden="true"></i> Delete Selected (<span id="selected-count">0</span>)
+        </button>
+        <button class="btn-danger-outline" id="clear-all-btn" onclick="openClearAllWarning()">
+          <i class="fa fa-trash" aria-hidden="true"></i> Clear All Data
+        </button>
+      </div>
+    </div>
+
+    <div class="staff-content">
+      {% if vehicles|length == 0 %}
+      <div class="no-results">
+        <div class="big-icon">📋</div>
+        <h3>No inspections in this category yet</h3>
+        <p>Once technicians submit inspections, they will appear here.</p>
+      </div>
+      {% else %}
+      <div class="no-results" id="no-filter-matches" style="display:none;">
+        <div class="big-icon">🔍</div>
+        <h3>No inspections match the selected filters</h3>
+        <p>Try clearing a filter above to see more results.</p>
+      </div>
+      <div class="staff-grid" id="staff-grid">
+        {% for v in vehicles %}
+        {% set cfg = vehicle_config[v.vehicle_type] %}
+        <div class="inspection-card {{ 'complete' if v.plate_text and v.odometer_text else '' }}"
+             data-id="{{ v.id }}"
+             data-type="{{ v.vehicle_type }}"
+             data-route="{{ v.route_type or '' }}"
+             data-plate="{{ (v.plate_text or '')|lower }}"
+             data-last-edited="{{ v.last_edited }}">
+          <div class="ic-header-row" oncontextmenu="showCardContextMenu(event, '{{ v.id }}')">
+            <label class="card-select-label" onclick="event.stopPropagation()" title="Select this vehicle">
+              <input type="checkbox" class="card-select-checkbox" onchange="toggleCardSelection('{{ v.id }}', this)">
+            </label>
+            <button class="ic-header" onclick="toggleCard('{{ v.id }}')" aria-expanded="false">
+            <div class="ic-col ic-col-type">
+              <div class="v-icon-sm"><img src="{{ url_for('static', filename='img/' + cfg.icon) }}" alt="{{ cfg.label }}"></div>
+              <span>{{ cfg.label }}</span>
+            </div>
+            <div class="ic-col ic-col-route">
+              {% if cfg.has_route_type %}
+              <span class="route-badge route-badge-{{ v.route_type or 'feeder' }}" data-route-badge>
+                {{ 'Trunk' if v.route_type == 'trunk' else 'Feeder' }}
+              </span>
+              {% else %}
+              <span class="route-na">—</span>
+              {% endif %}
+            </div>
+            <div class="ic-col ic-col-value">
+              <span class="col-label">Plate</span>
+              <span class="col-value" data-live="plate_text">{{ v.plate_text or '—' }}</span>
+            </div>
+            <div class="ic-col ic-col-value">
+              <span class="col-label">Odometer</span>
+              <span class="col-value" data-live="odometer_text">{{ v.odometer_text + ' km' if v.odometer_text else '—' }}</span>
+            </div>
+            <div class="ic-col ic-col-tyres">
+              <span class="col-label">Tyres (mm)</span>
+              <div class="tyre-chip-row">
+                {% for row in cfg.rows %}
+                  {% for t in row.left + row.right %}
+                  <span class="tyre-chip {{ 'flag' if v.tyres.get(t.code) is not none and v.tyres.get(t.code)|float > 3.2 else '' }}">{{ t.code }} {{ v.tyres.get(t.code, '—') }}</span>
+                  {% endfor %}
+                {% endfor %}
+              </div>
+            </div>
+            <div class="ic-col ic-col-meta">
+              <span class="ic-tech"><i class="fa fa-wrench" aria-hidden="true"></i> {{ v.added_by or "Unknown" }}</span>
+              <span class="ic-time"><i class="fa fa-clock-o" aria-hidden="true"></i> <span data-timestamp="{{ v.last_edited }}">{{ v.last_edited }}</span></span>
+            </div>
+            <i class="fa fa-chevron-down ic-chevron" aria-hidden="true"></i>
+            </button>
+          </div>
+          <div class="ic-body">
+
+            <div class="ic-body-grid">
+              <div class="ic-image-block">
+                <div class="ib-label">License Plate</div>
+                {% if v.plate_image %}
+                <img class="plate-img" src="{{ v.plate_image }}" alt="Plate photo">
+                {% endif %}
+                <div class="ocr-input-row">
+                  <input type="text"
+                         class="plate-text-input {{ '' if v.plate_text else 'needs-fill' }}"
+                         placeholder="Type the plate number shown above"
+                         value="{{ v.plate_text }}"
+                         data-field="plate_text"
+                         onchange="saveText('{{ v.id }}', 'plate_text', this)">
+                  {% if v.plate_image %}
+                  <button type="button" class="btn-ask-ai" onclick="askAIForPlate('{{ v.id }}', this)"
+                          title="Let AI read the plate photo">
+                    <i class="fa fa-magic" aria-hidden="true"></i> Ask AI
+                  </button>
+                  {% endif %}
+                </div>
+                <div class="save-hint" id="hint-plate-{{ v.id }}"></div>
+              </div>
+
+              <div class="ic-image-block">
+                <div class="ib-label">Odometer</div>
+                {% if v.odometer_image %}
+                <img class="odo-img" src="{{ v.odometer_image }}" alt="Odometer photo">
+                {% endif %}
+                <div class="ocr-input-row">
+                  <input type="text"
+                         class="odometer-text-input {{ '' if v.odometer_text else 'needs-fill' }}"
+                         placeholder="Type the odometer reading shown above (km)"
+                         value="{{ v.odometer_text }}"
+                         data-field="odometer_text"
+                         onchange="saveText('{{ v.id }}', 'odometer_text', this)">
+                  {% if v.odometer_image %}
+                  <button type="button" class="btn-ask-ai" onclick="askAIForOdometer('{{ v.id }}', this)"
+                          title="Let AI read the odometer photo">
+                    <i class="fa fa-magic" aria-hidden="true"></i> Ask AI
+                  </button>
+                  {% endif %}
+                </div>
+                <div class="save-hint" id="hint-odo-{{ v.id }}"></div>
+              </div>
+
+              {% if cfg.has_route_type %}
+              <div class="ic-image-block">
+                <div class="ib-label">Route Type</div>
+                <div class="route-slider-wrap route-edit-control">
+                  <span class="route-slider-label route-slider-label-feeder {{ 'active' if (v.route_type or 'feeder') == 'feeder' else '' }}">
+                    <i class="fa fa-map-signs" aria-hidden="true"></i> Feeder
+                  </span>
+                  <label class="route-slider">
+                    <input type="checkbox" {{ 'checked' if v.route_type == 'trunk' else '' }}
+                           onchange="onStaffRouteSliderChange('{{ v.id }}', this)">
+                    <span class="route-slider-track"><span class="route-slider-thumb"></span></span>
+                  </label>
+                  <span class="route-slider-label route-slider-label-trunk {{ 'active' if v.route_type == 'trunk' else '' }}">
+                    <i class="fa fa-road" aria-hidden="true"></i> Trunk
+                  </span>
+                </div>
+                <div class="save-hint" id="hint-route-{{ v.id }}"></div>
+              </div>
+              {% endif %}
+            </div>
+
+            <div class="ic-tyres">
+              <div class="ib-label">Tyre Tread Depth (mm)</div>
+              <table>
+                {% for row in cfg.rows %}
+                  {% for t in row.left + row.right %}
+                  <tr>
+                    <td class="t-label">{{ t.label }}</td>
+                    <td class="t-val {{ 'flag' if v.tyres.get(t.code) is not none and v.tyres.get(t.code)|float > 3.2 else '' }}">
+                      {{ v.tyres.get(t.code, '—') }} mm
+                    </td>
+                  </tr>
+                  {% endfor %}
+                {% endfor %}
+              </table>
+            </div>
+
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <button class="scroll-top-btn" id="scroll-top-btn" onclick="scrollToTop()" title="Back to top" aria-label="Back to top">
+    <i class="fa fa-arrow-up" aria-hidden="true"></i>
+  </button>
+
+  <div class="card-context-menu" id="card-context-menu">
+    <button onclick="enableSelectionMode(cardContextMenuTargetId)">
+      <i class="fa fa-check-square-o" aria-hidden="true"></i> To Delete
+    </button>
+  </div>
+
+  {% include "_tutorial_modal.html" %}
+
+  <!-- =============== FILTER CONFLICT WARNING =============== -->
+  <div class="modal-overlay" id="filter-warning-overlay">
+    <div class="modal-sheet" style="max-width:420px;">
+      <div class="modal-header" style="background:var(--gold-deep);">
+        <h3><i class="fa fa-info-circle" aria-hidden="true"></i> Heads Up</h3>
+        <button class="modal-close" onclick="closeFilterWarning()">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="danger-text" style="margin:0;">
+          Cars don't have a Trunk/Feeder route type, so with <strong>Car</strong>
+          and a route filter both selected, no cars will show up in the
+          results — only matching buses or double decker buses will.
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="closeFilterWarning()">Got It</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =============== CLEAR ALL DATA: STEP 1 WARNING =============== -->
+  <div class="modal-overlay" id="clear-warning-overlay">
+    <div class="modal-sheet danger-sheet">
+      <div class="modal-header danger-header">
+        <h3><i class="fa fa-exclamation-triangle" aria-hidden="true"></i> Clear All Data</h3>
+        <button class="modal-close" onclick="closeClearAllWarning()">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="danger-text" id="clear-all-scope-text"></p>
+        <p class="danger-text">
+          <strong>This cannot be undone.</strong> Please make sure you have
+          downloaded a spreadsheet copy of everything you need before
+          continuing.
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeClearAllWarning()">Cancel</button>
+        <button class="btn btn-danger" onclick="proceedToPasswordConfirm()">
+          <i class="fa fa-trash" aria-hidden="true"></i> Yes, Continue
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =============== CLEAR ALL DATA: STEP 2 PASSWORD =============== -->
+  <div class="modal-overlay" id="clear-password-overlay">
+    <div class="modal-sheet danger-sheet">
+      <div class="modal-header danger-header">
+        <h3><i class="fa fa-lock" aria-hidden="true"></i> Confirm Your Password</h3>
+        <button class="modal-close" onclick="closeClearPasswordModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="danger-text">
+          For your safety, please re-enter your password to confirm you want
+          to permanently delete all inspection data.
+        </p>
+        <div class="field">
+          <label for="clear-password-input"><i class="fa fa-lock" aria-hidden="true"></i> Password</label>
+          <div class="password-wrap">
+            <input type="password" id="clear-password-input" placeholder="Enter your password" autocomplete="current-password">
+            <button type="button" class="toggle-password" onclick="toggleClearPasswordVisibility()" aria-label="Show password">
+              <i class="fa fa-eye" id="clear-password-toggle-icon" aria-hidden="true"></i>
+            </button>
+          </div>
+        </div>
+        <div class="error-banner" id="clear-password-error" style="display:none;">
+          <i class="fa fa-exclamation-triangle" aria-hidden="true"></i>
+          <span id="clear-password-error-text">Incorrect password. Please try again.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeClearPasswordModal()">Cancel</button>
+        <button class="btn btn-danger" id="clear-confirm-btn" onclick="confirmClearAll()">
+          <i class="fa fa-trash" aria-hidden="true"></i> Permanently Delete
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =============== DELETE SELECTED VEHICLES =============== -->
+  <div class="modal-overlay" id="delete-selected-overlay">
+    <div class="modal-sheet danger-sheet">
+      <div class="modal-header danger-header">
+        <h3><i class="fa fa-trash" aria-hidden="true"></i> Delete Selected Vehicles</h3>
+        <button class="modal-close" onclick="closeDeleteSelectedWarning()">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="danger-text" id="delete-selected-text"></p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeDeleteSelectedWarning()">Cancel</button>
+        <button class="btn btn-danger" id="delete-selected-confirm-btn" onclick="confirmDeleteSelected()">
+          <i class="fa fa-trash" aria-hidden="true"></i> Delete
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =============== CONVERT ALL (PLATES OR ODOMETERS): STEP 1 CONFIRM =============== -->
+  <div class="modal-overlay" id="convert-all-warning-overlay">
+    <div class="modal-sheet ai-sheet">
+      <div class="modal-header ai-header">
+        <h3 id="convert-all-warning-title"><i class="fa fa-magic" aria-hidden="true"></i> Convert All with AI</h3>
+        <button class="modal-close" onclick="closeConvertAllWarning()">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="danger-text" id="convert-all-scope-text"></p>
+        <p class="danger-text" id="convert-all-scope-text-2">
+          Vehicles that already have that field filled in are left alone —
+          this will never overwrite something already entered. It can take
+          a little while for a lot of vehicles; you can keep working while it
+          runs, and it'll keep going even if you close this window.
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeConvertAllWarning()">Cancel</button>
+        <button class="btn btn-ai" onclick="startConvertAll()">
+          <i class="fa fa-magic" aria-hidden="true"></i> Start Converting
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =============== CONVERT ALL PLATES: STEP 2 PROGRESS =============== -->
+  <div class="modal-overlay" id="convert-all-progress-overlay">
+    <div class="modal-sheet ai-sheet">
+      <div class="modal-header ai-header">
+        <h3 id="convert-progress-title"><i class="fa fa-magic" aria-hidden="true"></i> Converting…</h3>
+        <button class="modal-close" onclick="hideConvertAllProgress()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="convert-progress-label" id="convert-progress-label">Starting…</div>
+        <div class="convert-progress-bar-track">
+          <div class="convert-progress-bar-fill" id="convert-progress-bar-fill"></div>
+        </div>
+        <div class="convert-progress-summary" id="convert-progress-summary"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" id="convert-progress-hide-btn" onclick="hideConvertAllProgress()">
+          Run in Background
+        </button>
+        <button class="btn btn-ai" id="convert-progress-done-btn" onclick="hideConvertAllProgress()" style="display:none;">
+          <i class="fa fa-check" aria-hidden="true"></i> Done
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.CURRENT_DATE_FILTER = "{{ date_filter }}";
+
+    // ---- helper the tutorial uses to expand one real card as a live demo ----
+    let staffDemoCardId = null;
+
+    function _tutExpandDemoCard() {
+      if (staffDemoCardId) return; // already expanded by us
+      const card = document.querySelector('.inspection-card');
+      if (!card) return;
+      if (!card.classList.contains('expanded') && typeof toggleCard === 'function') {
+        toggleCard(card.dataset.id);
+      }
+      staffDemoCardId = card.dataset.id;
+    }
+
+    function _tutCollapseDemoCard() {
+      if (!staffDemoCardId) return;
+      const card = document.querySelector(`.inspection-card[data-id="${staffDemoCardId}"]`);
+      if (card && card.classList.contains('expanded') && typeof toggleCard === 'function') {
+        toggleCard(staffDemoCardId);
+      }
+      staffDemoCardId = null;
+    }
+
+    window.TUTORIAL_STEPS = [
+      {
+        icon: "fa-desktop",
+        title: "Welcome, SMRT Staff!",
+        text: "This dashboard lets you review every inspection technicians submit, confirm plate and odometer readings, and export everything to Excel. Let's point out exactly where everything is."
+      },
+      {
+        title: "More Pages Above",
+        text: "Use these tabs to get to <strong>Manage Employees</strong> (add, edit, or remove technician and staff accounts) and <strong>My Profile</strong> (change your own username or password) — more pages may join them here later.",
+        target: () => document.querySelector('.staff-nav'),
+        placement: 'bottom'
+      },
+      {
+        title: "Filter by Vehicle Type",
+        text: "Tap any of these to filter — you can select more than one at once, e.g. <strong>Bus</strong> and <strong>Double Decker Bus</strong> together. Tap <strong>All</strong> to clear the filter.",
+        target: () => document.getElementById('type-pill-group'),
+        placement: 'bottom'
+      },
+      {
+        title: "Filter by Route Type",
+        text: "Feeder and Trunk route filters work the same way, and combine with the vehicle type filter. Since cars don't have a route type, selecting Car together with a route filter will warn you that only buses will match.",
+        target: () => document.getElementById('route-pill-group'),
+        placement: 'bottom'
+      },
+      {
+        title: "Sort the List",
+        text: "Choose how the list is ordered — newest or oldest first, or alphabetically by license plate in either direction.",
+        target: () => document.getElementById('sort-select'),
+        placement: 'bottom'
+      },
+      {
+        title: "Filter by Date",
+        text: "Use <strong>All Dates</strong>, <strong>Today</strong>, or <strong>This Week</strong> to focus on recent inspections only.",
+        target: () => document.querySelector('.date-pills'),
+        placement: 'bottom'
+      },
+      {
+        title: "Cards Start Minimized",
+        text: "Cards are wide and collapsed by default — you can already see the plate, odometer, route, and every tyre reading right on the header. Click anywhere on it to expand or collapse just that one.",
+        target: () => document.querySelector('.ic-header'),
+        placement: 'bottom'
+      },
+      {
+        title: "Expand or Collapse All",
+        text: "This button opens or closes every card at once — watch what happens:",
+        target: () => document.getElementById('expand-toggle-btn'),
+        placement: 'bottom',
+        enter: () => { if (typeof toggleExpandAll === 'function') toggleExpandAll(); },
+        exit: () => { if (typeof toggleExpandAll === 'function') toggleExpandAll(); }
+      },
+      {
+        title: "Review the Photos",
+        text: "Each card shows the plate and odometer photos the technician took. Type what you see into the box underneath each photo — it updates the header instantly. Or tap <strong>Ask AI</strong> next to either box to let AI take a first guess — always double-check its reading against the photo.",
+        target: () => document.querySelector('.inspection-card.expanded .ic-image-block'),
+        placement: 'right',
+        enter: _tutExpandDemoCard
+      },
+      {
+        title: "Edit the Route Type",
+        text: "For buses and double decker buses, you can correct the Trunk/Feeder route right here if the technician got it wrong.",
+        target: () => document.querySelector('.inspection-card.expanded .route-edit-control'),
+        placement: 'right',
+        enter: _tutExpandDemoCard
+      },
+      {
+        title: "Tyre Tread Readings",
+        text: "The full tyre reading table is further down each card. Readings under 3mm are flagged in red.",
+        target: () => document.querySelector('.inspection-card.expanded .ic-tyres'),
+        placement: 'right',
+        enter: _tutExpandDemoCard
+      },
+      {
+        title: "Convert All Plates at Once",
+        text: "When there's a lot of data, this button uses AI to read every plate photo currently shown that doesn't already have a plate number — all in one go, without overwriting anything already filled in. It runs in the background, so you can keep working while it finishes.",
+        target: () => document.getElementById('convert-all-plate-btn'),
+        placement: 'bottom'
+      },
+      {
+        title: "Convert All Odometers at Once",
+        text: "The same idea, but for odometer readings — reads every odometer photo currently shown that doesn't already have a reading typed in.",
+        target: () => document.getElementById('convert-all-odometer-btn'),
+        placement: 'bottom'
+      },
+      {
+        title: "Download the Spreadsheet",
+        text: "This exports whatever is currently filtered and sorted on screen to an Excel file. If any plate/odometer text box is still blank, the app highlights it and blocks the download.",
+        target: () => document.querySelector('.toolbar-right-actions .btn-primary'),
+        placement: 'bottom',
+        enter: _tutCollapseDemoCard
+      },
+      {
+        title: "Clear All Data — Use with Care",
+        text: "This deletes whatever is currently shown on the dashboard — so it respects your date, route, and vehicle type filters. Always download a spreadsheet backup first. You'll get a warning showing exactly how many vehicles are affected, then have to re-enter your password, before anything is actually deleted.",
+        target: () => document.getElementById('clear-all-btn'),
+        placement: 'top'
+      },
+      {
+        icon: "fa-check-circle",
+        title: "You're All Set!",
+        text: "That's the whole workflow. Tap <strong>Finish</strong> or <strong>Close Tutorial</strong> whenever you're ready.",
+        enter: _tutCollapseDemoCard
+      }
+    ];
+  </script>
+  <script src="{{ url_for('static', filename='js/timeformat.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/usermenu.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/tutorial.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/staff.js') }}"></script>
+</body>
+</html>

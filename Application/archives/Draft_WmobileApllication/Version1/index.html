@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SMRT Automated Tyre Inspection</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- Google Icons -->
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+
+    <!-- Google Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+
+<!-- ================= LOGIN SCREEN ================= -->
+
+<div id="loginPage" class="page">
+
+    <div class="login-card">
+
+        <h1>🛞</h1>
+        <h2>SMRT Tyre Inspection</h2>
+
+        <p>Technician Login</p>
+
+        <input
+            type="text"
+            id="techID"
+            placeholder="Enter Technician ID">
+
+        <button onclick="login()">
+            Login
+        </button>
+
+    </div>
+
+</div>
+
+<!-- ================= DASHBOARD ================= -->
+
+<div id="dashboardPage" class="page hidden">
+
+    <header>
+
+        <div>
+            <h2>Vehicle Inspections</h2>
+            <small id="welcomeText"></small>
+        </div>
+
+        <button class="exportBtn" onclick="exportCSV()">
+            Export CSV
+        </button>
+
+    </header>
+
+    <div id="inspectionList">
+
+        <!-- Cards generated here -->
+
+    </div>
+
+    <button class="fab" onclick="openVehicleSelector()">
+        +
+    </button>
+
+</div>
+
+<!-- ================= VEHICLE TYPE POPUP ================= -->
+
+<div id="vehiclePopup" class="popup hidden">
+
+    <div class="popup-card">
+
+        <h2>Select Vehicle</h2>
+
+        <div class="vehicle-options">
+
+            <div class="vehicle-card"
+                 onclick="startInspection('Car')">
+
+                <span class="material-icons pink">
+                    directions_car
+                </span>
+
+                <p>Car</p>
+
+            </div>
+
+            <div class="vehicle-card"
+                 onclick="startInspection('Single Bus')">
+
+                <span class="material-icons green">
+                    airport_shuttle
+                </span>
+
+                <p>Single Bus</p>
+
+            </div>
+
+            <div class="vehicle-card"
+                 onclick="startInspection('Double Decker')">
+
+                <span class="material-icons whiteBus">
+                    directions_bus
+                </span>
+
+                <p>Double Decker</p>
+
+            </div>
+
+        </div>
+
+        <button
+            class="cancelBtn"
+            onclick="closeVehicleSelector()">
+
+            Cancel
+
+        </button>
+
+    </div>
+
+</div>
+
+<!-- ================= INSPECTION FORM ================= -->
+
+<div id="inspectionPage" class="page hidden">
+
+    <header>
+
+        <button onclick="goHome()">
+            ←
+        </button>
+
+        <h2 id="vehicleTitle">
+            New Inspection
+        </h2>
+
+    </header>
+
+    <div class="form-container">
+
+        <h3>Vehicle Licence Plate</h3>
+
+        <div class="image-upload">
+
+            <input
+                type="file"
+                id="plateImage"
+                accept="image/*">
+
+        </div>
+
+        <h3>Odometer</h3>
+
+        <div class="image-upload">
+
+            <input
+                type="file"
+                id="odoImage"
+                accept="image/*">
+
+        </div>
+
+        <br>
+
+        <div id="tyreFields">
+
+            <!-- Generated automatically -->
+
+        </div>
+
+        <button
+            class="submitBtn"
+            onclick="submitInspection()">
+
+            Submit Inspection
+
+        </button>
+
+    </div>
+
+</div>
+
+<!-- ================= DETAILS PAGE ================= -->
+
+<div id="detailsPage" class="page hidden">
+
+    <header>
+
+        <button onclick="goHome()">
+            ←
+        </button>
+
+        <h2>Inspection Details</h2>
+
+    </header>
+
+    <div
+        id="detailsContent"
+        class="details-card">
+
+    </div>
+
+</div>
+
+<!-- ================= CONFIRMATION POPUP ================= -->
+
+<div id="confirmPopup" class="popup hidden">
+
+    <div class="popup-card">
+
+        <h2>Confirm Submission</h2>
+
+        <p>
+
+            Are you sure you want to submit this inspection?
+
+        </p>
+
+        <div class="popup-buttons">
+
+            <button
+                class="cancelBtn"
+                onclick="closeConfirm()">
+
+                Cancel
+
+            </button>
+
+            <button
+                class="confirmBtn"
+                onclick="confirmSubmit()">
+
+                Confirm
+
+            </button>
+
+        </div>
+
+    </div>
+
+</div>
+
+<script src="script.js"></script>
+
+</body>
+</html>

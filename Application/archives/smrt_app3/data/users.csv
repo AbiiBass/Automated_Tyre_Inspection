@@ -1,0 +1,9 @@
+username,password,role,name
+tech1,1234,technician,Peter Parker
+tech2,1234,technician,Bruce Wayne
+tech3,1234,technician,Ned
+tech4,1234,technician,Gwen
+staff1,1234,staff,Tony Stark
+staff2,1234,staff,Jean Grey
+staff3,1234,staff,Mary Jane
+staff4,1234,staff,Coca Cola

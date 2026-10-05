@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+<title>SMRT Technician — Vehicle Inspections</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div class="hazard-rail"></div>
+  <div class="topbar">
+    <div class="brand"><img class="brand-logo" src="{{ url_for('static', filename='img/smrt-logo.png') }}" alt="SMRT"> SMRT Inspections</div>
+    <div class="topbar-actions">
+      <button class="time-format-toggle" onclick="toggleTimeFormat()" title="Toggle between relative and exact time">
+        <i class="fa fa-clock-o" aria-hidden="true"></i> <span class="tf-label">Relative Time</span>
+      </button>
+      <button class="btn-tutorial" onclick="openTutorial()">
+        <i class="fa fa-graduation-cap" aria-hidden="true"></i> Tutorial
+      </button>
+      <div class="user-menu">
+        <button class="user-chip-btn" onclick="toggleUserMenu(event)">
+          <span class="name"><i class="fa fa-user-circle" aria-hidden="true"></i> {{ display_name }}</span>
+          <i class="fa fa-caret-down" aria-hidden="true"></i>
+        </button>
+        <div class="user-menu-popover" id="user-menu-popover">
+          <a href="{{ url_for('logout') }}"><i class="fa fa-sign-out" aria-hidden="true"></i> Log Out</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tech-page">
+    <div class="tech-content">
+      <h2 class="section-title">Today's Vehicle Inspections</h2>
+      <p class="section-subtitle"><i class="fa fa-info-circle" aria-hidden="true"></i> You're only seeing inspections you personally logged today. Other technicians' entries — and anything older — are still safe on the SMRT Staff dashboard.</p>
+
+      <div id="vehicle-list">
+        {% if vehicles|length == 0 %}
+        <div class="empty-state" id="empty-state">
+          <div class="big-icon">🚗</div>
+          <h3>No inspections logged today</h3>
+          <p>You'll only see inspections you personally added today here. Tap the red "Add Vehicle" button below to record one.</p>
+        </div>
+        {% endif %}
+
+        {% for v in vehicles %}
+        {% set cfg = vehicle_config[v.vehicle_type] %}
+        <div class="vehicle-card" data-id="{{ v.id }}">
+          <div class="v-icon">
+            <img src="{{ url_for('static', filename='img/' + cfg.icon) }}" alt="{{ cfg.label }}">
+          </div>
+          {% if v.plate_image %}
+            <img class="v-plate-thumb" src="{{ v.plate_image }}" alt="Plate">
+          {% else %}
+            <div class="v-plate-thumb placeholder">No<br>Photo</div>
+          {% endif %}
+          <div class="v-info">
+            <div class="v-type">{{ cfg.label }}</div>
+            <div class="v-time"><i class="fa fa-clock-o" aria-hidden="true"></i> <span data-timestamp="{{ v.last_edited }}">{{ v.last_edited }}</span></div>
+          </div>
+          <button class="card-menu-btn" onclick="toggleMenu(event, '{{ v.id }}')"><i class="fa fa-ellipsis-v" aria-hidden="true"></i></button>
+          <div class="card-menu-popover" id="menu-{{ v.id }}">
+            <button onclick="editVehicle('{{ v.id }}')"><i class="fa fa-pencil" aria-hidden="true"></i> Edit</button>
+            <button class="danger" onclick="deleteVehicle('{{ v.id }}')"><i class="fa fa-trash" aria-hidden="true"></i> Delete</button>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="fab-wrap">
+    <button class="fab" onclick="openAddWizard()">
+      <span class="plus">+</span> Add Vehicle
+    </button>
+  </div>
+
+  <!-- =============== WIZARD MODAL =============== -->
+  <div class="modal-overlay" id="wizard-overlay">
+    <div class="modal-sheet">
+      <div class="modal-header">
+        <h3 id="wizard-title">New Inspection</h3>
+        <button class="modal-close" onclick="closeWizard()">✕</button>
+      </div>
+      <div class="step-progress" id="step-progress">
+        <div class="seg active" data-step="1"></div>
+        <div class="seg" data-step="2"></div>
+      </div>
+      <div class="modal-body" id="wizard-body">
+
+        <!-- STEP 1: choose vehicle type -->
+        <div class="wizard-step" id="step-1">
+          <div class="form-section">
+            <div class="fs-title">Choose the vehicle type</div>
+            <div class="fs-hint">Tap the picture that matches the vehicle you are inspecting.</div>
+            <div class="type-choice-grid">
+              <button type="button" class="type-card" data-type="car" onclick="selectType('car')">
+                <div class="icon"><img src="{{ url_for('static', filename='img/car.png') }}" alt="Car"></div>
+                <div class="label">Car</div>
+                <div class="sub">4 tyres</div>
+              </button>
+              <button type="button" class="type-card" data-type="bus" onclick="selectType('bus')">
+                <div class="icon"><img src="{{ url_for('static', filename='img/bus.png') }}" alt="Bus"></div>
+                <div class="label">Bus</div>
+                <div class="sub">6 tyres</div>
+              </button>
+              <button type="button" class="type-card" data-type="doubledecker" onclick="selectType('doubledecker')">
+                <div class="icon"><img src="{{ url_for('static', filename='img/double-decker-bus.png') }}" alt="Double Decker Bus"></div>
+                <div class="label">Double Decker Bus</div>
+                <div class="sub">10 tyres</div>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- STEP 2: full form -->
+        <div class="wizard-step" id="step-2" style="display:none;">
+
+          <div class="form-section">
+            <div class="fs-title"><span class="num">1</span> Vehicle License Plate Photo</div>
+            <div class="fs-hint">Take a clear picture of the plate. Line it up inside the gold rectangle.</div>
+            <div class="capture-box">
+              <img class="capture-preview plate-ratio" id="plate-preview" style="display:none;">
+              <button type="button" class="btn btn-gold" id="plate-photo-btn" onclick="openCamera('plate')">📷 Take Plate Photo</button>
+            </div>
+          </div>
+
+          <div class="form-section">
+            <div class="fs-title"><span class="num">2</span> Odometer Photo</div>
+            <div class="fs-hint">Take a picture of the odometer display.</div>
+            <div class="capture-box">
+              <img class="capture-preview odo-ratio" id="odometer-preview" style="display:none;">
+              <button type="button" class="btn btn-gold" id="odometer-photo-btn" onclick="openCamera('odometer')">📷 Take Odometer Photo</button>
+            </div>
+          </div>
+
+          <div class="form-section" id="route-type-section" style="display:none;">
+            <div class="fs-title"><span class="num">3</span> Bus Route Type</div>
+            <div class="fs-hint">Is this bus running a Trunk or Feeder route? Slide to choose.</div>
+            <div class="route-slider-wrap" id="route-type-switch">
+              <span class="route-slider-label route-slider-label-feeder active" id="route-label-feeder">
+                <i class="fa fa-map-signs" aria-hidden="true"></i> Feeder
+              </span>
+              <label class="route-slider">
+                <input type="checkbox" id="route-slider-input" onchange="onRouteSliderChange(this)">
+                <span class="route-slider-track"><span class="route-slider-thumb"></span></span>
+              </label>
+              <span class="route-slider-label route-slider-label-trunk" id="route-label-trunk">
+                <i class="fa fa-road" aria-hidden="true"></i> Trunk
+              </span>
+            </div>
+          </div>
+
+          <div class="form-section" id="tyre-section">
+            <div class="fs-title"><span class="num" id="tyre-step-num">4</span> Tyre Tread Depth (mm)</div>
+            <div class="fs-hint">Tap a box to see which tyre it is on the diagram. Enter up to 2 decimal places.</div>
+            <div class="tyre-layout">
+              <div class="tyre-diagram" id="tyre-diagram"></div>
+              <div class="tyre-inputs" id="tyre-inputs"></div>
+            </div>
+          </div>
+
+          <div class="form-section">
+            <div class="fs-title"><span class="num" id="last-edited-step-num">5</span> Last Edited</div>
+            <div class="readonly-field">
+              <span>Set automatically when you tap Complete</span>
+              <span>🔒</span>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <div class="modal-footer" id="wizard-footer">
+        <button class="btn btn-outline" id="back-btn" style="display:none;" onclick="goBackStep()">Back</button>
+        <button class="btn btn-primary" id="complete-btn" style="display:none;" onclick="submitInspection()">✓ Complete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =============== CAMERA MODAL =============== -->
+  <div class="camera-modal" id="camera-modal">
+    <div class="camera-stage">
+      <video id="camera-video" autoplay playsinline muted></video>
+      <div class="camera-caption" id="camera-caption">Align the plate inside the box</div>
+      <div class="camera-overlay-rect" id="camera-overlay-rect"></div>
+    </div>
+    <div class="camera-controls">
+      <button class="camera-cancel" onclick="closeCamera()">Cancel</button>
+      <button class="shutter-btn" onclick="captureShot()"></button>
+      <div style="width:60px;"></div>
+    </div>
+  </div>
+  <canvas id="capture-canvas" style="display:none;"></canvas>
+
+  <div class="toast" id="toast"></div>
+
+  {% include "_tutorial_modal.html" %}
+
+  <script>
+    window.VEHICLE_CONFIG = {{ vehicle_config|tojson }};
+
+    // ---- helpers the tutorial uses to drive the REAL add-vehicle wizard ----
+    function _tutEnsureWizardStep1() {
+      if (typeof openAddWizard !== 'function') return;
+      const overlay = document.getElementById('wizard-overlay');
+      if (!overlay.classList.contains('open')) {
+        openAddWizard();
+      } else if (typeof showStep === 'function') {
+        showStep(1);
+      }
+    }
+
+    function _tutEnsureWizardStep2() {
+      if (typeof openAddWizard !== 'function') return;
+      const overlay = document.getElementById('wizard-overlay');
+      if (!overlay.classList.contains('open')) openAddWizard();
+      // Use "bus" as the demo type (not "car") so the Trunk/Feeder route
+      // question also has something real to point at during the tour.
+      selectedType = 'bus';
+      document.querySelectorAll('.type-card').forEach(c => {
+        c.classList.toggle('selected', c.dataset.type === 'bus');
+      });
+      if (typeof buildTyreUI === 'function') buildTyreUI('bus');
+      if (typeof updateRouteTypeUI === 'function') updateRouteTypeUI();
+      if (typeof showStep === 'function') showStep(2);
+    }
+
+    let techTutTyreInterval = null;
+
+    const DEMO_PLATE_HTML = `
+      <div class="demo-camera-frame">
+        <div class="demo-camera-guide"></div>
+        <div class="demo-camera-plate">SBA 1234A</div>
+        <div class="demo-camera-flash"></div>
+      </div>`;
+    const DEMO_ODO_HTML = `
+      <div class="demo-camera-frame">
+        <div class="demo-camera-guide"></div>
+        <div class="demo-camera-plate demo-odo">65,560 km</div>
+        <div class="demo-camera-flash"></div>
+      </div>`;
+
+    window.TUTORIAL_STEPS = [
+      {
+        icon: "fa-mobile",
+        title: "Welcome, Technician!",
+        text: "This app records each vehicle's tyre tread depth, odometer reading, and license plate photo during your inspection. Let's walk through how it works, step by step, pointing out exactly what to tap."
+      },
+      {
+        title: "Your Inspection List",
+        text: "This is your home screen. It lists inspections <strong>you personally logged today</strong> — other technicians' entries and older ones aren't shown here, but they're always safe on the SMRT Staff dashboard.",
+        target: () => document.getElementById('vehicle-list'),
+        placement: 'bottom'
+      },
+      {
+        title: "Add a New Vehicle",
+        text: "Tap this red button to start a new inspection.",
+        target: () => document.querySelector('.fab'),
+        placement: 'top',
+        enter: () => { if (typeof closeWizard === 'function') closeWizard(); }
+      },
+      {
+        title: "Choose the Vehicle Type",
+        text: "Pick <strong>Car</strong>, <strong>Bus</strong>, or <strong>Double Decker Bus</strong>. Each type has a different number of tyres, and the form adjusts automatically.",
+        target: () => document.querySelector('.type-choice-grid'),
+        placement: 'bottom',
+        enter: _tutEnsureWizardStep1
+      },
+      {
+        title: "Photograph the License Plate",
+        text: "Tap this button, then line up the plate inside the gold rectangle and tap the shutter. Only the area inside the rectangle is saved — like this:",
+        target: () => document.getElementById('plate-photo-btn'),
+        placement: 'bottom',
+        demoHtml: DEMO_PLATE_HTML,
+        enter: _tutEnsureWizardStep2
+      },
+      {
+        title: "Photograph the Odometer",
+        text: "Tap here to take a picture of the odometer display. The camera frame is fixed at a 4:3 ratio for consistency.",
+        target: () => document.getElementById('odometer-photo-btn'),
+        placement: 'bottom',
+        demoHtml: DEMO_ODO_HTML,
+        enter: _tutEnsureWizardStep2
+      },
+      {
+        title: "Bus Route Type",
+        text: "For buses and double decker buses only, choose whether this trip is a <strong>Feeder</strong> or <strong>Trunk</strong> route. Feeder is selected by default. Cars skip this question entirely.",
+        target: () => document.getElementById('route-type-section'),
+        placement: 'bottom',
+        enter: () => {
+          _tutEnsureWizardStep2();
+          if (typeof selectRouteType === 'function') selectRouteType('feeder');
+        }
+      },
+      {
+        title: "Enter Tyre Tread Depths",
+        text: "Tap into any tyre's box — watch the matching tyre light up gold on the diagram, like it's doing now. That's how you always know which tyre you're measuring. Enter depth in millimetres, up to 2 decimal places.",
+        target: () => document.getElementById('tyre-section'),
+        placement: 'top',
+        enter: () => {
+          _tutEnsureWizardStep2();
+          clearInterval(techTutTyreInterval);
+          let idx = 0;
+          techTutTyreInterval = setInterval(() => {
+            const dots = document.querySelectorAll('#tyre-diagram .tyre-dot');
+            if (!dots.length) return;
+            dots.forEach(d => d.classList.remove('active'));
+            dots[idx % dots.length].classList.add('active');
+            idx++;
+          }, 550);
+        },
+        exit: () => {
+          clearInterval(techTutTyreInterval);
+          document.querySelectorAll('#tyre-diagram .tyre-dot').forEach(d => d.classList.remove('active'));
+        }
+      },
+      {
+        title: "Complete the Inspection",
+        text: "Tap <strong>Complete</strong> once everything is filled in. The last-edited date and time is stamped automatically — you never need to enter it yourself.",
+        target: () => document.getElementById('complete-btn'),
+        placement: 'top',
+        enter: _tutEnsureWizardStep2
+      },
+      {
+        title: "Edit or Delete Later",
+        text: "Tap the three dots on any card to edit its details or delete the entry if a mistake was made — the menu pops up right there, like this:",
+        target: () => document.querySelector('.card-menu-popover.open') || document.querySelector('.vehicle-card .card-menu-btn'),
+        placement: 'left',
+        enter: () => {
+          if (typeof closeWizard === 'function') closeWizard();
+          const card = document.querySelector('.vehicle-card');
+          if (card && typeof toggleMenu === 'function') {
+            toggleMenu({ stopPropagation: () => {} }, card.dataset.id);
+          }
+        },
+        exit: () => {
+          document.querySelectorAll('.card-menu-popover.open').forEach(el => el.classList.remove('open'));
+        }
+      },
+      {
+        icon: "fa-thumbs-up",
+        title: "You're All Set!",
+        text: "That's everything you need to know. Tap <strong>Finish</strong> or <strong>Close Tutorial</strong> any time to get back to work.",
+        enter: () => { if (typeof closeWizard === 'function') closeWizard(); }
+      }
+    ];
+  </script>
+  <script src="{{ url_for('static', filename='js/timeformat.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/usermenu.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/tutorial.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/technician.js') }}"></script>
+</body>
+</html>

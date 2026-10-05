@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
+<title>SMRT Vehicle Inspection</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div class="phone-frame">
+
+  <!-- ============ LOGIN SCREEN ============ -->
+  <section id="screen-login" class="screen active">
+    <div class="login-wrap">
+      <div class="login-logo">
+        <svg viewBox="0 0 64 64" width="56" height="56"><circle cx="32" cy="32" r="32" fill="#16323F"/><path d="M16 38l3-12a4 4 0 0 1 4-3h18a4 4 0 0 1 4 3l3 12" stroke="#F2A93B" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/><rect x="16" y="38" width="32" height="7" rx="2" fill="#F2A93B"/><circle cx="22" cy="46" r="3" fill="#16323F" stroke="#fff" stroke-width="1.5"/><circle cx="42" cy="46" r="3" fill="#16323F" stroke="#fff" stroke-width="1.5"/></svg>
+      </div>
+      <h1>Vehicle Inspection</h1>
+      <p class="login-sub">Sign in with your staff ID to start inspecting vehicles.</p>
+
+      <label class="field-label" for="login-id">Staff ID</label>
+      <input id="login-id" class="text-input" type="text" placeholder="e.g. SM1001" autocomplete="off" autocapitalize="characters" />
+      <div id="login-error" class="error-text" hidden>ID not found. Please check and try again.</div>
+
+      <button id="btn-login" class="btn btn-primary btn-block">Sign In</button>
+      <p class="login-hint">Try one of: SM1001, SM1002, SM1003</p>
+    </div>
+  </section>
+
+  <!-- ============ MAIN LIST SCREEN ============ -->
+  <section id="screen-list" class="screen">
+    <header class="app-header">
+      <div>
+        <div class="app-header-title">Vehicle Inspections</div>
+        <div class="app-header-sub" id="welcome-text">Hi there</div>
+      </div>
+      <div class="header-actions">
+        <button id="btn-export" class="icon-btn" title="Export to CSV" aria-label="Export to CSV">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 19h14" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button id="btn-logout" class="icon-btn" title="Sign out" aria-label="Sign out">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path d="M15 17l5-5-5-5M20 12H9M12 19H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="filter-row" id="filter-row">
+      <button class="chip active" data-filter="all">All</button>
+      <button class="chip" data-filter="car">Car</button>
+      <button class="chip" data-filter="single_bus">Single Bus</button>
+      <button class="chip" data-filter="double_decker">Double Decker</button>
+    </div>
+
+    <div id="card-list" class="card-list"></div>
+
+    <div id="empty-state" class="empty-state" hidden>
+      <svg viewBox="0 0 64 64" width="64" height="64"><circle cx="32" cy="32" r="30" fill="#EEF2F3"/><path d="M20 40l3-11a4 4 0 0 1 4-3h10a4 4 0 0 1 4 3l3 11" stroke="#9AB0B9" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <p>No inspections yet.<br/>Tap + to add your first vehicle.</p>
+    </div>
+
+    <button id="btn-add" class="fab" aria-label="Add vehicle inspection">
+      <svg viewBox="0 0 24 24" width="28" height="28"><path d="M12 5v14M5 12h14" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/></svg>
+    </button>
+  </section>
+
+  <!-- ============ TYPE PICKER SHEET ============ -->
+  <section id="screen-type" class="screen sheet">
+    <div class="sheet-header">
+      <button class="link-btn" id="btn-type-cancel">Cancel</button>
+      <div class="sheet-title">Select Vehicle Type</div>
+      <div style="width:52px"></div>
+    </div>
+    <div class="type-grid">
+      <button class="type-card" data-type="car">
+        <div class="type-icon type-icon-car">
+          <svg viewBox="0 0 64 40" width="46" height="30"><path d="M6 26l4-12a5 5 0 0 1 5-3h20a5 5 0 0 1 5 3l4 12" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><rect x="4" y="26" width="56" height="9" rx="3" fill="#fff"/><circle cx="16" cy="35" r="4.5" fill="#0B1E25"/><circle cx="48" cy="35" r="4.5" fill="#0B1E25"/></svg>
+        </div>
+        <span>Car</span>
+      </button>
+      <button class="type-card" data-type="single_bus">
+        <div class="type-icon type-icon-single">
+          <svg viewBox="0 0 64 40" width="46" height="30"><rect x="4" y="8" width="56" height="24" rx="4" fill="none" stroke="#fff" stroke-width="3"/><line x1="4" y1="20" x2="60" y2="20" stroke="#fff" stroke-width="2"/><circle cx="16" cy="35" r="4.5" fill="#0B1E25"/><circle cx="48" cy="35" r="4.5" fill="#0B1E25"/></svg>
+        </div>
+        <span>Single Bus</span>
+      </button>
+      <button class="type-card" data-type="double_decker">
+        <div class="type-icon type-icon-decker">
+          <svg viewBox="0 0 64 40" width="46" height="30"><rect x="4" y="2" width="56" height="30" rx="4" fill="none" stroke="#16323F" stroke-width="3"/><line x1="4" y1="17" x2="60" y2="17" stroke="#16323F" stroke-width="2"/><circle cx="16" cy="35" r="4.5" fill="#16323F"/><circle cx="48" cy="35" r="4.5" fill="#16323F"/></svg>
+        </div>
+        <span>Double Decker</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- ============ INSPECTION FORM SHEET ============ -->
+  <section id="screen-form" class="screen sheet">
+    <div class="sheet-header">
+      <button class="link-btn" id="btn-form-cancel">Cancel</button>
+      <div class="sheet-title" id="form-title">New Inspection</div>
+      <div style="width:52px"></div>
+    </div>
+
+    <div class="form-scroll">
+      <div class="form-section">
+        <div class="form-q-title">1. License plate photo</div>
+        <div class="form-q-sub">Frame the plate inside the guide box.</div>
+        <div id="capture-plate" class="capture-box" data-target="plate">
+          <div class="capture-placeholder">
+            <svg viewBox="0 0 24 24" width="30" height="30"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z" stroke="#5B7480" stroke-width="2" fill="none" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.5" stroke="#5B7480" stroke-width="2" fill="none"/></svg>
+            <span>Tap to take photo</span>
+          </div>
+          <img class="capture-preview" hidden />
+        </div>
+      </div>
+
+      <div class="form-section">
+        <div class="form-q-title">2. Odometer photo</div>
+        <div class="form-q-sub">Frame the odometer display inside the guide box.</div>
+        <div id="capture-odometer" class="capture-box" data-target="odometer">
+          <div class="capture-placeholder">
+            <svg viewBox="0 0 24 24" width="30" height="30"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z" stroke="#5B7480" stroke-width="2" fill="none" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.5" stroke="#5B7480" stroke-width="2" fill="none"/></svg>
+            <span>Tap to take photo</span>
+          </div>
+          <img class="capture-preview" hidden />
+        </div>
+      </div>
+
+      <div class="form-section">
+        <div class="form-q-title">3. Tyre tread depth (mm)</div>
+        <div class="form-q-sub">Enter the reading for each tyre.</div>
+        <div id="tyre-grid" class="tyre-grid"></div>
+      </div>
+    </div>
+
+    <div class="form-footer">
+      <button id="btn-submit" class="btn btn-primary btn-block">Submit Inspection</button>
+    </div>
+  </section>
+
+  <!-- ============ CAMERA OVERLAY ============ -->
+  <section id="screen-camera" class="screen camera-screen">
+    <video id="camera-video" autoplay playsinline muted></video>
+    <div id="camera-guide" class="camera-guide"></div>
+    <canvas id="camera-canvas" hidden></canvas>
+    <img id="camera-preview-img" class="camera-preview-img" hidden />
+
+    <div class="camera-top-bar">
+      <button id="btn-camera-close" class="icon-btn icon-btn-dark" aria-label="Close camera">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path d="M6 6l12 12M18 6L6 18" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/></svg>
+      </button>
+      <div class="camera-label" id="camera-label">Align license plate</div>
+      <div style="width:40px"></div>
+    </div>
+
+    <div class="camera-bottom-bar" id="camera-shoot-bar">
+      <button id="btn-camera-shoot" class="shutter-btn" aria-label="Take photo"></button>
+    </div>
+
+    <div class="camera-bottom-bar" id="camera-confirm-bar" hidden>
+      <button id="btn-camera-retake" class="btn btn-secondary">Retake</button>
+      <button id="btn-camera-use" class="btn btn-primary">Use Photo</button>
+    </div>
+  </section>
+
+  <!-- ============ DETAIL SHEET ============ -->
+  <section id="screen-detail" class="screen sheet">
+    <div class="sheet-header">
+      <button class="link-btn" id="btn-detail-close">Close</button>
+      <div class="sheet-title">Inspection Details</div>
+      <div style="width:52px"></div>
+    </div>
+    <div id="detail-content" class="form-scroll"></div>
+  </section>
+
+</div>
+
+<!-- ============ MODAL: confirm submit ============ -->
+<div id="modal-confirm" class="modal-overlay" hidden>
+  <div class="modal-box">
+    <div class="modal-title">Confirm to submit?</div>
+    <p class="modal-text">Please double check the photos and tyre readings before submitting.</p>
+    <div class="modal-actions">
+      <button id="btn-confirm-cancel" class="btn btn-secondary">Cancel</button>
+      <button id="btn-confirm-ok" class="btn btn-primary">OK, Submit</button>
+    </div>
+  </div>
+</div>
+
+<!-- generic toast -->
+<div id="toast" class="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>

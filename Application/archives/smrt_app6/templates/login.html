@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<title>SMRT Fleet Inspection — Sign In</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="login-page">
+  <div class="hazard-rail"></div>
+  <div class="login-wrap">
+    <div class="login-card">
+      <div class="login-brand">
+        <div class="logo-mark">SMRT</div>
+        <h1>Fleet Tyre &amp; Odometer Inspection</h1>
+        <p>Sign in to continue</p>
+      </div>
+
+      <form class="login-form" method="POST" action="{{ url_for('login') }}">
+        {% if error %}
+        <div class="error-banner"><i class="fa fa-exclamation-triangle" aria-hidden="true"></i> {{ error }}</div>
+        {% endif %}
+
+        <div class="field">
+          <label for="username"><i class="fa fa-user" aria-hidden="true"></i> User ID</label>
+          <input type="text" id="username" name="username" autocomplete="username" required autofocus placeholder="e.g. tech1">
+        </div>
+        <div class="field">
+          <label for="password"><i class="fa fa-lock" aria-hidden="true"></i> Password</label>
+          <div class="password-wrap">
+            <input type="password" id="password" name="password" autocomplete="current-password" required placeholder="Enter your password">
+            <button type="button" class="toggle-password" id="toggle-password" aria-label="Show password">
+              <i class="fa fa-eye" id="toggle-password-icon" aria-hidden="true"></i>
+            </button>
+          </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary"><i class="fa fa-sign-in" aria-hidden="true"></i> Sign In</button>
+
+        <div class="hint-box" id="demo-hint">
+          <i class="fa fa-info-circle" aria-hidden="true"></i>
+          Demo accounts (see <code>data/users.csv</code>) — Technician: <strong>tech1</strong> / <strong>tech123</strong><br>
+          SMRT Staff: <strong>staff1</strong> / <strong>staff123</strong>
+        </div>
+      </form>
+    </div>
+  </div>
+  <div class="login-footer">SMRT Fleet Inspection System · Internal Use Only</div>
+
+  <script>
+    const pwInput = document.getElementById('password');
+    const toggleBtn = document.getElementById('toggle-password');
+    const toggleIcon = document.getElementById('toggle-password-icon');
+    toggleBtn.addEventListener('click', () => {
+      const isHidden = pwInput.type === 'password';
+      pwInput.type = isHidden ? 'text' : 'password';
+      toggleIcon.classList.toggle('fa-eye', !isHidden);
+      toggleIcon.classList.toggle('fa-eye-slash', isHidden);
+      toggleBtn.setAttribute('aria-label', isHidden ? 'Hide password' : 'Show password');
+    });
+  </script>
+</body>
+</html>

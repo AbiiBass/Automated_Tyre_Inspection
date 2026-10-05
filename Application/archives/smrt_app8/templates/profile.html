@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SMRT Staff — My Profile</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div class="hazard-rail"></div>
+  <div class="topbar">
+    <div class="brand"><span class="dot"></span> SMRT Inspection Dashboard</div>
+    <div class="topbar-actions">
+      <div class="user-chip">
+        <span class="name"><i class="fa fa-user-circle" aria-hidden="true"></i> {{ display_name }}</span>
+        <a class="logout-link" href="{{ url_for('logout') }}"><i class="fa fa-sign-out" aria-hidden="true"></i> Log Out</a>
+      </div>
+    </div>
+  </div>
+
+  {% include "_staff_nav.html" %}
+
+  <div class="staff-page">
+    <div class="profile-content">
+      <h2 class="section-title">My Profile</h2>
+      <p class="section-subtitle"><i class="fa fa-info-circle" aria-hidden="true"></i>
+        You can change your username and/or password here. Leave the password fields blank
+        to keep your current password.
+      </p>
+
+      <div class="profile-card">
+        <div class="error-banner" id="profile-form-error" style="display:none;">
+          <i class="fa fa-exclamation-triangle" aria-hidden="true"></i>
+          <span id="profile-form-error-text"></span>
+        </div>
+
+        <div class="field">
+          <label for="profile-username-input"><i class="fa fa-at" aria-hidden="true"></i> Username</label>
+          <input type="text" id="profile-username-input" value="{{ my_username }}">
+        </div>
+
+        <div class="field">
+          <label for="profile-password-input"><i class="fa fa-lock" aria-hidden="true"></i> New Password</label>
+          <div class="password-wrap">
+            <input type="password" id="profile-password-input" placeholder="Leave blank to keep current password" autocomplete="new-password">
+            <button type="button" class="toggle-password" onclick="toggleProfilePasswordVisibility('profile-password-input', this)" aria-label="Show password">
+              <i class="fa fa-eye" aria-hidden="true"></i>
+            </button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="profile-password-confirm-input"><i class="fa fa-lock" aria-hidden="true"></i> Confirm New Password</label>
+          <div class="password-wrap">
+            <input type="password" id="profile-password-confirm-input" placeholder="Re-enter your new password" autocomplete="new-password">
+            <button type="button" class="toggle-password" onclick="toggleProfilePasswordVisibility('profile-password-confirm-input', this)" aria-label="Show password">
+              <i class="fa fa-eye" aria-hidden="true"></i>
+            </button>
+          </div>
+        </div>
+
+        <button class="btn btn-primary" style="width:auto;" onclick="submitProfileForm()">
+          <i class="fa fa-check" aria-hidden="true"></i> Save Changes
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =============== LOGOUT WARNING MODAL =============== -->
+  <div class="modal-overlay" id="profile-logout-warning-overlay">
+    <div class="modal-sheet danger-sheet">
+      <div class="modal-header danger-header">
+        <h3><i class="fa fa-exclamation-triangle" aria-hidden="true"></i> You'll Be Logged Out</h3>
+        <button class="modal-close" onclick="closeProfileLogoutWarning()">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="danger-text" id="profile-logout-warning-text">
+          Saving these changes will log you out immediately. You'll need to sign back in with
+          your new details.
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeProfileLogoutWarning()">Cancel</button>
+        <button class="btn btn-danger" id="profile-confirm-btn" onclick="confirmProfileUpdate()">
+          <i class="fa fa-sign-out" aria-hidden="true"></i> Save &amp; Log Out
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    window.MY_USERNAME = {{ my_username|tojson }};
+  </script>
+  <script src="{{ url_for('static', filename='js/profile.js') }}"></script>
+</body>
+</html>

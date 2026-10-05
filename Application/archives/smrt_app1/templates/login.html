@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<title>SMRT Fleet Inspection — Sign In</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="login-page">
+  <div class="hazard-rail"></div>
+  <div class="login-wrap">
+    <div class="login-card">
+      <div class="login-brand">
+        <div class="logo-mark">SMRT</div>
+        <h1>Fleet Tyre &amp; Odometer Inspection</h1>
+        <p>Sign in to continue</p>
+      </div>
+
+      <div class="role-tabs">
+        <button type="button" class="role-tab {{ 'active' if role_tab == 'technician' else '' }}" data-role="technician">
+          🔧 Technician
+        </button>
+        <button type="button" class="role-tab {{ 'active' if role_tab == 'staff' else '' }}" data-role="staff">
+          🗂️ SMRT Staff
+        </button>
+      </div>
+
+      <form class="login-form" method="POST" action="{{ url_for('login') }}">
+        <input type="hidden" name="role_tab" id="role_tab_input" value="{{ role_tab }}">
+
+        {% if error %}
+        <div class="error-banner">⚠ {{ error }}</div>
+        {% endif %}
+
+        <div class="field">
+          <label for="username">Username</label>
+          <input type="text" id="username" name="username" autocomplete="username" required autofocus placeholder="e.g. tech1">
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <div class="password-wrap">
+            <input type="password" id="password" name="password" autocomplete="current-password" required placeholder="Enter your password">
+            <button type="button" class="toggle-password" id="toggle-password" aria-label="Show password">👁️</button>
+          </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary">Sign In</button>
+
+        <div class="hint-box" id="demo-hint">
+          Demo accounts — Technician: <strong>tech1</strong> / <strong>tech123</strong><br>
+          SMRT Staff: <strong>staff1</strong> / <strong>staff123</strong>
+        </div>
+      </form>
+    </div>
+  </div>
+  <div class="login-footer">SMRT Fleet Inspection System · Internal Use Only</div>
+
+  <script>
+    const tabs = document.querySelectorAll('.role-tab');
+    const roleInput = document.getElementById('role_tab_input');
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        tabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        roleInput.value = tab.dataset.role;
+      });
+    });
+
+    const pwInput = document.getElementById('password');
+    const toggleBtn = document.getElementById('toggle-password');
+    toggleBtn.addEventListener('click', () => {
+      const isHidden = pwInput.type === 'password';
+      pwInput.type = isHidden ? 'text' : 'password';
+      toggleBtn.textContent = isHidden ? '🙈' : '👁️';
+      toggleBtn.setAttribute('aria-label', isHidden ? 'Hide password' : 'Show password');
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SMRT Staff — Fleet Overview</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div class="hazard-rail"></div>
+  <div class="topbar">
+    <div class="brand"><img class="brand-logo" src="{{ url_for('static', filename='img/smrt-logo.png') }}" alt="SMRT"> SMRT Inspection Dashboard</div>
+    <div class="topbar-actions">
+      <div class="user-chip">
+        <button class="user-chip-btn" onclick="toggleUserMenu(event)">
+          <span class="name"><i class="fa fa-user-circle" aria-hidden="true"></i> {{ display_name }}</span>
+          <i class="fa fa-caret-down" aria-hidden="true"></i>
+        </button>
+        <div class="user-menu-popover" id="user-menu-popover">
+          <a href="{{ url_for('logout') }}"><i class="fa fa-sign-out" aria-hidden="true"></i> Log Out</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% include "_staff_nav.html" %}
+
+  <div class="staff-page">
+    <div class="fleet-content">
+      <div class="employees-header">
+        <div>
+          <h2 class="section-title">Fleet Overview</h2>
+          <p class="section-subtitle"><i class="fa fa-info-circle" aria-hidden="true"></i>
+            Upload spreadsheets exported from <strong>Download Spreadsheet</strong> on the Dashboard
+            (either the combined file or the per-type .zip) to build up a history for each plate —
+            tread depth and odometer trends over time, not just the current reading.
+          </p>
+        </div>
+      </div>
+
+      <div class="fleet-upload-card">
+        <div class="fleet-upload-row">
+          <label class="fleet-file-label" for="fleet-upload-input">
+            <i class="fa fa-upload" aria-hidden="true"></i>
+            <span id="fleet-upload-filenames">Choose .xlsx or .zip file(s)…</span>
+          </label>
+          <input type="file" id="fleet-upload-input" accept=".xlsx,.zip" multiple style="display:none;" onchange="onFleetFilesChosen(this)">
+          <button class="btn btn-primary" style="width:auto;" id="fleet-upload-btn" onclick="uploadFleetFiles()" disabled>
+            <i class="fa fa-cloud-upload" aria-hidden="true"></i> Upload
+          </button>
+        </div>
+        <div class="fleet-upload-result" id="fleet-upload-result"></div>
+      </div>
+
+      <div class="fleet-tables-row">
+        {% for vtype, cfg in vehicle_config.items() %}
+        <div class="fleet-table-col">
+          <h3 class="employees-table-heading">
+            <img src="{{ url_for('static', filename='img/' + cfg.icon) }}" alt="{{ cfg.label }}" class="fleet-table-heading-icon">
+            {{ cfg.label }}
+            <span class="table-count">({{ groups[vtype]|length }})</span>
+          </h3>
+          <div class="employees-table-wrap">
+            <table class="employees-table fleet-table">
+              <thead>
+                <tr>
+                  <th>Plate Number</th>
+                  {% if cfg.has_route_type %}<th>Route</th>{% endif %}
+                  <th>Latest Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for v in groups[vtype] %}
+                <tr class="fleet-row" onclick="openFleetDetail('{{ vtype }}', '{{ v.plate_text|e }}')">
+                  <td class="emp-name">{{ v.plate_text }}</td>
+                  {% if cfg.has_route_type %}
+                  <td>
+                    <span class="route-badge route-badge-{{ v.route_type or 'feeder' }}">
+                      {{ 'Trunk' if v.route_type == 'trunk' else 'Feeder' }}
+                    </span>
+                  </td>
+                  {% endif %}
+                  <td><span data-timestamp="{{ v.snapshot_date }}">{{ v.snapshot_date }}</span></td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            {% if groups[vtype]|length == 0 %}
+            <div class="no-results-inline">
+              <p>No {{ cfg.label|lower }} history uploaded yet.</p>
+            </div>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="fleet-danger-zone">
+        <button class="btn-danger-outline" onclick="openClearFleetWarning()">
+          <i class="fa fa-trash" aria-hidden="true"></i> Clear Fleet History
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =============== VEHICLE DETAIL MODAL =============== -->
+  <div class="modal-overlay" id="fleet-detail-overlay">
+    <div class="modal-sheet fleet-detail-sheet">
+      <div class="modal-header">
+        <h3 id="fleet-detail-title"><i class="fa fa-car" aria-hidden="true"></i> Vehicle Detail</h3>
+        <button class="modal-close" onclick="closeFleetDetail()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="fleet-detail-loading" class="fleet-detail-loading">
+          <i class="fa fa-spinner fa-spin" aria-hidden="true"></i> Loading history…
+        </div>
+        <div id="fleet-detail-content" style="display:none;">
+          <div class="fleet-latest-grid" id="fleet-latest-grid"></div>
+
+          <div class="fleet-chart-block">
+            <div class="ib-label">Odometer Over Time</div>
+            <canvas id="fleet-odometer-chart" height="110"></canvas>
+          </div>
+
+          <div class="fleet-chart-block">
+            <div class="ib-label">Tyre Tread Depth Over Time (mm)</div>
+            <canvas id="fleet-tyre-chart" height="110"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeFleetDetail()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =============== CLEAR FLEET HISTORY =============== -->
+  <div class="modal-overlay" id="clear-fleet-warning-overlay">
+    <div class="modal-sheet danger-sheet">
+      <div class="modal-header danger-header">
+        <h3><i class="fa fa-exclamation-triangle" aria-hidden="true"></i> Clear Fleet History</h3>
+        <button class="modal-close" onclick="closeClearFleetWarning()">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="danger-text">
+          This permanently deletes <strong>every uploaded snapshot</strong> for every vehicle —
+          the three tables above and all the trend charts will be empty again. It does not
+          touch the live Dashboard data, only what's been uploaded here.
+        </p>
+        <div class="field">
+          <label for="clear-fleet-password-input"><i class="fa fa-lock" aria-hidden="true"></i> Confirm Your Password</label>
+          <div class="password-wrap">
+            <input type="password" id="clear-fleet-password-input" placeholder="Enter your password" autocomplete="current-password">
+            <button type="button" class="toggle-password" onclick="toggleClearFleetPasswordVisibility()" aria-label="Show password">
+              <i class="fa fa-eye" id="clear-fleet-password-toggle-icon" aria-hidden="true"></i>
+            </button>
+          </div>
+        </div>
+        <div class="error-banner" id="clear-fleet-error" style="display:none;">
+          <i class="fa fa-exclamation-triangle" aria-hidden="true"></i>
+          <span id="clear-fleet-error-text"></span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeClearFleetWarning()">Cancel</button>
+        <button class="btn btn-danger" id="clear-fleet-confirm-btn" onclick="confirmClearFleet()">
+          <i class="fa fa-trash" aria-hidden="true"></i> Permanently Delete
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    window.VEHICLE_CONFIG = {{ vehicle_config|tojson }};
+  </script>
+  <script src="{{ url_for('static', filename='js/timeformat.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/usermenu.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/fleet_overview.js') }}"></script>
+</body>
+</html>
