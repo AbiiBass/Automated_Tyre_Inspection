@@ -17,7 +17,6 @@
 #define SDA_PIN 8
 #define SCL_PIN 9
 #define OLED_RESET 10
-
 #define MEASURE_BUTTON_PIN 4
 
 // =====================================================
@@ -29,10 +28,7 @@
 #define OLED_ADDRESS 0x3D
 
 Adafruit_SSD1306 display(
-    SCREEN_WIDTH,
-    SCREEN_HEIGHT,
-    &Wire,
-    OLED_RESET
+    SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET
 );
 
 bool oledReady = false;
@@ -46,7 +42,6 @@ const uint8_t SHIFT_REG = 0x35;
 const uint8_t DISTANCE_H_REG = 0x5E;
 
 // Experimental calibration
-// 30 mm distance = 0 mm tread depth
 const float REFERENCE_MM = 30.000f;
 
 // =====================================================
@@ -60,7 +55,6 @@ const int GROUP_SIZE = 3;
 const int SAMPLE_DELAY_MS = 30;
 const float MAX_DISTANCE_MM = 500.0f;
 
-// Project thresholds
 const float SMRT_THRESHOLD_MM = 5.000f;
 const float LTA_THRESHOLD_MM = 1.600f;
 
@@ -151,23 +145,14 @@ bool readDistance(float &distanceMm)
 float medianOfThree(float a, float b, float c)
 {
     if (a > b) {
-        float t = a;
-        a = b;
-        b = t;
+        float t = a; a = b; b = t;
     }
-
     if (b > c) {
-        float t = b;
-        b = c;
-        c = t;
+        float t = b; b = c; c = t;
     }
-
     if (a > b) {
-        float t = a;
-        a = b;
-        b = t;
+        float t = a; a = b; b = t;
     }
-
     return b;
 }
 
@@ -192,13 +177,12 @@ float medianOfFive(const float values[5])
 }
 
 // =====================================================
-// 10. OLED BASE SCREEN
+// 10. OLED FUNCTIONS
 // =====================================================
 
 void drawHeader()
 {
-    if (!oledReady)
-        return;
+    if (!oledReady) return;
 
     display.clearDisplay();
     display.setTextColor(SSD1306_WHITE);
@@ -207,23 +191,16 @@ void drawHeader()
     display.setCursor(27, 5);
     display.println("TREAD DEPTH");
 
-    display.drawLine(
-        0, 17, 127, 17, SSD1306_WHITE
-    );
+    display.drawLine(0, 17, 127, 17, SSD1306_WHITE);
 }
 
-void showMessage(
-    const char* line1,
-    const char* line2 = ""
-)
+void showMessage(const char* line1, const char* line2 = "")
 {
-    if (!oledReady)
-        return;
+    if (!oledReady) return;
 
     drawHeader();
 
     display.setTextSize(1);
-
     display.setCursor(5, 30);
     display.println(line1);
 
@@ -243,40 +220,26 @@ void showMeasuring()
     showMessage("MEASURING...");
 }
 
-// =====================================================
-// 11. OLED RESULT / WARNINGS
-// =====================================================
-
 void showDepth(float depthMm)
 {
-    if (!oledReady)
-        return;
+    if (!oledReady) return;
 
     drawHeader();
 
     display.setTextSize(2);
     display.setCursor(5, 27);
-
     display.print(depthMm, 3);
     display.print(" mm");
 
     if (depthMm <= LTA_THRESHOLD_MM) {
-
-        display.fillRect(
-            0, 48, 128, 16, SSD1306_WHITE
-        );
-
+        display.fillRect(0, 48, 128, 16, SSD1306_WHITE);
         display.setTextColor(SSD1306_BLACK);
         display.setTextSize(1);
         display.setCursor(19, 52);
         display.print("SAFETY WARNING");
     }
     else if (depthMm <= SMRT_THRESHOLD_MM) {
-
-        display.drawRect(
-            0, 21, 128, 43, SSD1306_WHITE
-        );
-
+        display.drawRect(0, 21, 128, 43, SSD1306_WHITE);
         display.setTextSize(1);
         display.setCursor(40, 52);
         display.print("WARNING!");
@@ -294,13 +257,12 @@ void restoreDisplay()
 }
 
 // =====================================================
-// 12. CAPTURE MEASUREMENT
+// 11. CAPTURE MEASUREMENT
 // =====================================================
 
 void captureMeasurement()
 {
     showMeasuring();
-
     measurementAvailable = false;
 
     float rawSamples[RAW_SAMPLE_COUNT];
@@ -308,55 +270,35 @@ void captureMeasurement()
     Serial.println();
     Serial.println("===== MEASUREMENT START =====");
 
-    // Capture 15 sensor samples
     for (int i = 0; i < RAW_SAMPLE_COUNT; i++) {
-
         float distanceMm;
 
         if (!readDistance(distanceMm)) {
-
             Serial.println("Sensor read error.");
-
-            showMessage(
-                "SENSOR ERROR",
-                "TRY AGAIN"
-            );
-
+            showMessage("SENSOR ERROR", "TRY AGAIN");
             return;
         }
 
         Serial.printf(
             "Sample %d: %.3f mm\n",
-            i + 1,
-            distanceMm
+            i + 1, distanceMm
         );
 
         if (distanceMm > MAX_DISTANCE_MM ||
             distanceMm < REFERENCE_MM) {
-
-            Serial.println(
-                "Invalid/out-of-range reading."
-            );
-
-            showMessage(
-                "INVALID READING",
-                "REPOSITION SENSOR"
-            );
-
+            Serial.println("Invalid/out-of-range reading.");
+            showMessage("INVALID READING", "REPOSITION SENSOR");
             return;
         }
 
         rawSamples[i] = distanceMm;
-
         delay(SAMPLE_DELAY_MS);
     }
 
     Serial.println();
     Serial.println("Five filtered tread depths:");
 
-    // Convert 15 samples into 5 readings
     for (int group = 0; group < FILTERED_COUNT; group++) {
-
         int base = group * GROUP_SIZE;
 
         float medianDistance = medianOfThree(
@@ -375,15 +317,12 @@ void captureMeasurement()
         );
     }
 
-    // OLED displays median
     displayedDepth = medianOfFive(storedReadings);
 
-    // Website receives arithmetic mean
     float sum = 0.0f;
 
-    for (int i = 0; i < FILTERED_COUNT; i++) {
+    for (int i = 0; i < FILTERED_COUNT; i++)
         sum += storedReadings[i];
-    }
 
     averageDepth = sum / FILTERED_COUNT;
 
@@ -410,7 +349,7 @@ void captureMeasurement()
 }
 
 // =====================================================
-// 13. CONNECT TO WIFI
+// 12. CONNECT TO WIFI
 // =====================================================
 
 bool connectWiFi()
@@ -427,18 +366,15 @@ bool connectWiFi()
 
     while (WiFi.status() != WL_CONNECTED &&
            millis() - start < 15000) {
-
         delay(300);
     }
 
     if (WiFi.status() != WL_CONNECTED) {
-
         Serial.println("Wi-Fi connection FAILED!");
         return false;
     }
 
     Serial.println("Wi-Fi connected!");
-
     Serial.print("ESP32 IP: ");
     Serial.println(WiFi.localIP());
 
@@ -446,7 +382,7 @@ bool connectWiFi()
 }
 
 // =====================================================
-// 14. FORMAT SIX VALUES
+// 13. FORMAT SIX VALUES
 // =====================================================
 
 String formatMeasurements()
@@ -454,12 +390,10 @@ String formatMeasurements()
     String measurementString = "";
 
     for (int i = 0; i < FILTERED_COUNT; i++) {
-
         if (i > 0)
             measurementString += ";";
 
-        measurementString +=
-            String(storedReadings[i], 3);
+        measurementString += String(storedReadings[i], 3);
     }
 
     measurementString += ";";
@@ -469,63 +403,23 @@ String formatMeasurements()
 }
 
 // =====================================================
-// 15. HTTPS POST UPLOAD
+// 14. HTTPS POST UPLOAD
 // =====================================================
 
 bool sendMeasurements()
 {
-    if (!measurementAvailable) {
-        Serial.println("No measurement to upload.");
+    if (!measurementAvailable)
         return false;
-    }
 
     showMessage("CONNECTING...", "PLEASE WAIT");
 
     if (!connectWiFi()) {
-
-        showMessage(
-            "WIFI FAILED",
-            "CHECK HOTSPOT"
-        );
-
+        showMessage("WIFI FAILED", "CHECK HOTSPOT");
         delay(1800);
         restoreDisplay();
         return false;
     }
-    // =====================================================
-// WIFI DIAGNOSTICS
-// =====================================================
 
-Serial.println("===== WIFI DIAGNOSTICS =====");
-
-Serial.print("WiFi status: ");
-Serial.println(WiFi.status());
-
-Serial.print("Connected SSID: ");
-Serial.println(WiFi.SSID());
-
-Serial.print("ESP32 IP: ");
-Serial.println(WiFi.localIP());
-
-Serial.print("Signal strength: ");
-Serial.print(WiFi.RSSI());
-Serial.println(" dBm");
-
-// DNS TEST
-IPAddress resolvedIP;
-
-if (WiFi.hostByName(
-    "devotee-unsuited-moisture.ngrok-free.dev",
-    resolvedIP
-)) {
-    Serial.print("DNS SUCCESS: ");
-    Serial.println(resolvedIP);
-}
-else {
-    Serial.println("DNS FAILED");
-}
-
-Serial.println("============================");
     String measurementString = formatMeasurements();
 
     Serial.println();
@@ -540,21 +434,14 @@ Serial.println("============================");
 
     WiFiClientSecure client;
 
-    // Prototype testing only.
-    // TLS certificate verification is disabled.
+    // Prototype only: certificate verification disabled.
     client.setInsecure();
 
     HTTPClient http;
 
     if (!http.begin(client, SERVER_URL)) {
-
         Serial.println("HTTPS initialization failed!");
-
-        showMessage(
-            "UPLOAD FAILED",
-            "HTTPS ERROR"
-        );
-
+        showMessage("UPLOAD FAILED", "HTTPS ERROR");
         delay(1800);
         restoreDisplay();
         return false;
@@ -562,35 +449,20 @@ Serial.println("============================");
 
     http.setTimeout(15000);
 
-    http.addHeader(
-        "Content-Type",
-        "application/json"
-    );
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("X-API-Key", SERVER_API_KEY);
+    http.addHeader("ngrok-skip-browser-warning", "true");
 
-    http.addHeader(
-        "X-API-Key",
-        SERVER_API_KEY
-    );
-
-    http.addHeader(
-        "ngrok-skip-browser-warning",
-        "true"
-    );
-
-    // JSON payload for teammate's website
     String payload =
         "{\"value\":\"" + measurementString + "\"}";
 
     Serial.print("JSON Payload: ");
     Serial.println(payload);
 
-    // Actual HTTPS POST
     int httpCode = http.POST(payload);
-
     bool success = false;
 
     if (httpCode > 0) {
-
         Serial.print("HTTP Status: ");
         Serial.println(httpCode);
 
@@ -600,39 +472,24 @@ Serial.println("============================");
         Serial.println(response);
 
         if (httpCode == 200) {
-
             Serial.println("UPLOAD SUCCESSFUL!");
             success = true;
         }
         else {
-
             Serial.println("UPLOAD REJECTED!");
         }
     }
     else {
-
         Serial.print("HTTP Error: ");
-        Serial.println(
-            http.errorToString(httpCode)
-        );
+        Serial.println(http.errorToString(httpCode));
     }
 
     http.end();
 
-    if (success) {
-
-        showMessage(
-            "UPLOADED!",
-            "6 VALUES SENT"
-        );
-    }
-    else {
-
-        showMessage(
-            "UPLOAD FAILED",
-            "CHECK SERVER"
-        );
-    }
+    if (success)
+        showMessage("UPLOADED!", "6 VALUES SENT");
+    else
+        showMessage("UPLOAD FAILED", "CHECK SERVER");
 
     delay(1800);
     restoreDisplay();
@@ -643,7 +500,7 @@ Serial.println("============================");
 }
 
 // =====================================================
-// 16. BUTTON HANDLING
+// 15. BUTTON HANDLING
 // =====================================================
 
 struct ButtonState {
@@ -654,10 +511,7 @@ struct ButtonState {
 };
 
 ButtonState measureButton = {
-    MEASURE_BUTTON_PIN,
-    HIGH,
-    HIGH,
-    0
+    MEASURE_BUTTON_PIN, HIGH, HIGH, 0
 };
 
 bool pressed(ButtonState &button)
@@ -671,7 +525,6 @@ bool pressed(ButtonState &button)
 
     if (millis() - button.changedAt >= 35 &&
         raw != button.stable) {
-
         button.stable = raw;
 
         if (raw == LOW)
@@ -682,7 +535,7 @@ bool pressed(ButtonState &button)
 }
 
 // =====================================================
-// 17. SETUP
+// 16. SETUP
 // =====================================================
 
 void setup()
@@ -693,10 +546,7 @@ void setup()
     Wire.begin(SDA_PIN, SCL_PIN);
     Wire.setClock(100000);
 
-    pinMode(
-        MEASURE_BUTTON_PIN,
-        INPUT_PULLUP
-    );
+    pinMode(MEASURE_BUTTON_PIN, INPUT_PULLUP);
 
     oledReady = display.begin(
         SSD1306_SWITCHCAPVCC,
@@ -712,7 +562,7 @@ void setup()
 
     Serial.println();
     Serial.println("=============================");
-    Serial.println("       TREAD DEPTH V3.3");
+    Serial.println("       TREAD DEPTH V3.4");
     Serial.println("=============================");
     Serial.println("GPIO4: MEASURE + AUTO UPLOAD");
     Serial.println("15 samples -> 5 grouped medians");
@@ -723,7 +573,7 @@ void setup()
 }
 
 // =====================================================
-// 18. MAIN LOOP
+// 17. MAIN LOOP
 // =====================================================
 
 void loop()
@@ -731,14 +581,9 @@ void loop()
     bool measurePressed = pressed(measureButton);
 
     if (measurePressed) {
-
-        // Capture sensor measurements
         captureMeasurement();
 
-        // Automatically upload after
-        // a successful measurement
         if (measurementAvailable) {
-
             Serial.println();
             Serial.println(
                 "Measurement complete. Auto-uploading..."
@@ -747,7 +592,6 @@ void loop()
             sendMeasurements();
         }
         else {
-
             Serial.println(
                 "Measurement invalid. Upload cancelled."
             );
