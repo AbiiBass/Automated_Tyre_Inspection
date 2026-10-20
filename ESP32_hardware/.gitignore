@@ -1,0 +1,16 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# VS Code
+.vscode/
+
+# Wi-Fi credentials
+secrets.h
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
