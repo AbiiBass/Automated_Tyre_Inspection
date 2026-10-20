@@ -41,7 +41,11 @@ USERS_CSV_PATH = os.path.join(BASE_DIR, "data", "users.csv")
 CSV_FIELDS = [
     "id", "vehicle_type", "plate_image", "plate_text",
     "odometer_image", "odometer_text", "tyres_json",
-    "route_type", "added_by", "added_by_username", "last_edited"
+    "route_type", "added_by", "added_by_username", "last_edited",
+    # NEW: raw ESP32 readings. {"FL": [r1, r2, r3, r4, r5, avg], ...} - only
+    # present for tyres measured with the ESP32 board. Manually typed tyres
+    # have NO entry here (they keep just the single value in tyres_json).
+    "tyre_readings_json",
 ]
 USERS_CSV_FIELDS = ["username", "password", "role", "name"]
 
@@ -137,7 +141,13 @@ def read_all():
     ensure_csv()
     with open(CSV_PATH, "r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        return list(reader)
+        rows = list(reader)
+    # Older CSVs were written before tyre_readings_json existed.
+    for r in rows:
+        r.setdefault("tyre_readings_json", "")
+        if r["tyre_readings_json"] is None:
+            r["tyre_readings_json"] = ""
+    return rows
 
 
 def write_all(rows):
@@ -662,6 +672,41 @@ def technician_config():
     return jsonify(VEHICLE_CONFIG)
 
 
+def _clean_tyre_readings(raw, tyres, vehicle_type):
+    """Validate the ESP32 readings a technician's page sends back on save.
+
+    Keeps a tyre's readings ONLY when they are a list of exactly six finite
+    numbers (5 readings + average), the tyre code belongs to this vehicle
+    type, and the 6th value matches the average that is saved in `tyres`
+    (so a stale/edited field can never carry mismatched ESP data).
+    """
+    valid_codes = {
+        t["code"]
+        for row in VEHICLE_CONFIG[vehicle_type]["rows"]
+        for t in row["left"] + row["right"]
+    }
+    out = {}
+    if not isinstance(raw, dict):
+        return out
+    for code, vals in raw.items():
+        if code not in valid_codes or not isinstance(vals, (list, tuple)) or len(vals) != 6:
+            continue
+        try:
+            nums = [float(v) for v in vals]
+        except (TypeError, ValueError):
+            continue
+        if any(n != n or n in (float("inf"), float("-inf")) for n in nums):
+            continue
+        try:
+            saved = float(tyres.get(code))
+        except (TypeError, ValueError):
+            continue
+        if abs(saved - nums[5]) > 0.006:
+            continue  # field was changed by hand after the ESP reading
+        out[code] = nums
+    return out
+
+
 @app.route("/technician/save", methods=["POST"])
 @login_required(role="technician")
 def technician_save():
@@ -690,6 +735,9 @@ def technician_save():
         "odometer_image": data.get("odometer_image", ""),
         "odometer_text": data.get("odometer_text", ""),
         "tyres_json": json.dumps(tyres),
+        "tyre_readings_json": json.dumps(
+            _clean_tyre_readings(data.get("tyre_readings"), tyres, vehicle_type)
+        ),
         "route_type": route_type,
         "added_by": session.get("display_name", my_username),
         "added_by_username": my_username,
@@ -736,6 +784,7 @@ def technician_get_vehicle(vid):
         return jsonify({"error": "You can only view inspections you added yourself."}), 403
     row = dict(row)
     row["tyres"] = json.loads(row.get("tyres_json") or "{}")
+    row["tyre_readings"] = json.loads(row.get("tyre_readings_json") or "{}")
     return jsonify(row)
 
 
@@ -753,6 +802,184 @@ def technician_delete(vid):
         if len(new_rows) == len(rows):
             return jsonify({"error": "Not found"}), 404
         write_all(new_rows)
+    return jsonify({"success": True})
+
+
+# ---------------------------------------------------------------------------
+# ESP32 tyre-gauge integration
+# ---------------------------------------------------------------------------
+# Flow:
+#   1. A technician taps a tyre field  ->  the page calls /technician/esp/arm
+#      and starts polling /technician/esp/poll ("listening" state).
+#   2. The ESP32 POSTs "r1;r2;r3;r4;r5;avg" to /api/esp/measurement.
+#   3. The server hands that message to the technician whose field was armed
+#      most recently; the page shows only the average (6th value) but sends
+#      all six back on save (stored in tyre_readings_json).
+#   4. The box KEEPS listening (even after it received a value) until the
+#      technician types, taps another tyre, taps away from a box that already
+#      holds an ESP32 value, or closes the wizard. A newer message replaces
+#      the older one.
+#
+# State is held in memory (one process). If you run several worker
+# processes, keep ESP traffic on one worker or move this to Redis/DB.
+ESP_API_KEY = os.environ.get("ESP_API_KEY", "local-test-key")
+# A tapped box keeps listening for as long as the technician's page keeps
+# polling (once a second). If the page goes away (tab closed, phone asleep)
+# the slot is dropped after this many seconds without a poll.
+ESP_IDLE_TIMEOUT_SECONDS = 120
+ESP_MAX_TREAD_MM = 30.0            # same ceiling as the number input
+
+esp_lock = threading.Lock()
+esp_slots = {}   # username -> {token, tyre, armed_at, last_seen, result, seq, received_at}
+
+
+def _esp_prune(now=None):
+    now = now or datetime.now().timestamp()
+    for user in list(esp_slots):
+        slot = esp_slots[user]
+        if now - slot["last_seen"] > ESP_IDLE_TIMEOUT_SECONDS:
+            del esp_slots[user]
+
+
+def _esp_extract_message():
+    """Pull the semicolon string out of whatever the board sent: raw text,
+    a JSON string, a JSON object ({"data": "..."}), or form data."""
+    payload = request.get_json(silent=True)
+    if isinstance(payload, str):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("value", "data", "message", "values", "measurement", "payload", "readings"):
+            if isinstance(payload.get(key), str):
+                return payload[key]
+            if isinstance(payload.get(key), list):
+                return ";".join(str(v) for v in payload[key])
+        # Any other field name: use the first string that looks like r1;...;avg
+        for v in payload.values():
+            if isinstance(v, str) and ";" in v:
+                return v
+        return None
+    if request.form:
+        for key in ("value", "data", "message", "values", "measurement", "payload"):
+            if request.form.get(key):
+                return request.form.get(key)
+        for v in request.form.values():
+            if ";" in v:
+                return v
+    raw = request.get_data(as_text=True)
+    return raw
+
+
+def parse_esp_message(text):
+    """'1.1;1.2;1.3;1.2;1.1;1.18' -> six floats, or raises ValueError."""
+    if text is None:
+        raise ValueError("Empty message.")
+    cleaned = text.strip().strip('"\'').strip().rstrip(";").strip()
+    parts = [p.strip() for p in cleaned.split(";")]
+    if len(parts) != 6:
+        raise ValueError(f"Expected 6 values separated by ';' but got {len(parts)}.")
+    values = []
+    for p in parts:
+        try:
+            v = float(p)
+        except ValueError:
+            raise ValueError(f"'{p}' is not a number.")
+        if v != v or v in (float("inf"), float("-inf")) or v < 0 or v > ESP_MAX_TREAD_MM:
+            raise ValueError(f"{p} is outside the allowed 0-{ESP_MAX_TREAD_MM:g} mm range.")
+        values.append(v)
+    return values
+
+
+def _esp_key_ok():
+    supplied = (
+        request.headers.get("X-API-Key")
+        or request.headers.get("X-Api-Key")
+        or request.args.get("api_key")
+    )
+    auth = request.headers.get("Authorization", "")
+    if not supplied and auth.lower().startswith("bearer "):
+        supplied = auth[7:].strip()
+    if not supplied:
+        body = request.get_json(silent=True)
+        if isinstance(body, dict):
+            supplied = body.get("api_key") or body.get("key")
+    return bool(supplied) and supplied == ESP_API_KEY
+
+
+@app.route("/api/esp/measurement", methods=["POST"])
+def esp_measurement():
+    if not _esp_key_ok():
+        return jsonify({"error": "Invalid or missing API key."}), 401
+    try:
+        values = parse_esp_message(_esp_extract_message())
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    now = datetime.now().timestamp()
+    with esp_lock:
+        _esp_prune(now)
+        # Every armed box is still listening, even ones that already hold a
+        # value - a new message simply replaces it (seq goes up by one).
+        waiting = list(esp_slots.items())
+        if not waiting:
+            return jsonify({
+                "error": "No technician is listening. Tap a tyre field in the app, then send again."
+            }), 409
+        # Most recently tapped field wins.
+        user, slot = max(waiting, key=lambda us: us[1]["armed_at"])
+        slot["result"] = values
+        slot["seq"] += 1
+        slot["received_at"] = now
+        tyre = slot["tyre"]
+    return jsonify({"success": True, "tyre": tyre, "average": values[5]})
+
+
+@app.route("/technician/esp/arm", methods=["POST"])
+@login_required(role="technician")
+def technician_esp_arm():
+    data = request.get_json(silent=True) or {}
+    tyre = str(data.get("tyre", ""))[:8]
+    if not re.fullmatch(r"[A-Za-z0-9]+", tyre or ""):
+        return jsonify({"error": "Invalid tyre."}), 400
+    token = str(uuid.uuid4())
+    now = datetime.now().timestamp()
+    with esp_lock:
+        _esp_prune(now)
+        esp_slots[session["username"]] = {
+            "token": token, "tyre": tyre, "armed_at": now, "last_seen": now,
+            "result": None, "seq": 0, "received_at": None,
+        }
+    return jsonify({"token": token, "timeout": ESP_IDLE_TIMEOUT_SECONDS})
+
+
+@app.route("/technician/esp/poll")
+@login_required(role="technician")
+def technician_esp_poll():
+    token = request.args.get("token", "")
+    try:
+        after = int(request.args.get("after", "0"))
+    except ValueError:
+        after = 0
+    now = datetime.now().timestamp()
+    with esp_lock:
+        _esp_prune(now)
+        slot = esp_slots.get(session["username"])
+        if not slot or slot["token"] != token:
+            return jsonify({"status": "expired"})
+        slot["last_seen"] = now          # page is alive: keep listening
+        if slot["seq"] > after:
+            return jsonify({"status": "received", "tyre": slot["tyre"],
+                            "values": slot["result"], "seq": slot["seq"]})
+        return jsonify({"status": "waiting"})
+
+
+@app.route("/technician/esp/disarm", methods=["POST"])
+@login_required(role="technician")
+def technician_esp_disarm():
+    data = request.get_json(silent=True) or {}
+    with esp_lock:
+        slot = esp_slots.get(session["username"])
+        if slot and slot["token"] == data.get("token"):
+            del esp_slots[session["username"]]
     return jsonify({"success": True})
 
 
@@ -784,6 +1011,8 @@ def staff_home():
 
     for r in rows:
         r["tyres"] = json.loads(r.get("tyres_json") or "{}")
+        # ESP32-measured tyres carry [r1..r5, avg]; manual ones are absent.
+        r["tyre_readings"] = json.loads(r.get("tyre_readings_json") or "{}")
 
     return render_template(
         "staff.html",

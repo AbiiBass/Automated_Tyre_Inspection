@@ -179,7 +179,7 @@
               <div class="tyre-chip-row">
                 {% for row in cfg.rows %}
                   {% for t in row.left + row.right %}
-                  <span class="tyre-chip {{ 'flag' if v.tyres.get(t.code) is not none and v.tyres.get(t.code)|float < 5 else '' }}">{{ t.code }} {{ v.tyres.get(t.code, '—') }}</span>
+                  <span class="tyre-chip {{ 'flag' if v.tyres.get(t.code) is not none and v.tyres.get(t.code)|float < 5 else '' }}" {% if v.tyre_readings.get(t.code) %}title="ESP32 average of 5 readings"{% endif %}>{{ t.code }} {{ v.tyres.get(t.code, '—') }}</span>
                   {% endfor %}
                 {% endfor %}
               </div>
@@ -193,7 +193,10 @@
           </div>
           <div class="ic-body">
 
-            <div class="ic-body-grid">
+            <div class="ic-body-layout">
+
+              <!-- LEFT: photos, plate on top, odometer underneath -->
+              <div class="ic-media-col">
               <div class="ic-image-block">
                 <div class="ib-label">License Plate</div>
                 {% if v.plate_image %}
@@ -202,7 +205,7 @@
                 <div class="ocr-input-row">
                   <input type="text"
                          class="plate-text-input {{ '' if v.plate_text else 'needs-fill' }}"
-                         placeholder="Type the plate number shown above"
+                         placeholder="Plate number"
                          value="{{ v.plate_text }}"
                          data-field="plate_text"
                          onchange="saveText('{{ v.id }}', 'plate_text', this)">
@@ -224,7 +227,7 @@
                 <div class="ocr-input-row">
                   <input type="text"
                          class="odometer-text-input {{ '' if v.odometer_text else 'needs-fill' }}"
-                         placeholder="Type the odometer reading shown above (km)"
+                         placeholder="Odometer reading (km)"
                          value="{{ v.odometer_text }}"
                          data-field="odometer_text"
                          onchange="saveText('{{ v.id }}', 'odometer_text', this)">
@@ -238,8 +241,12 @@
                 <div class="save-hint" id="hint-odo-{{ v.id }}"></div>
               </div>
 
+              </div>
+
+              <!-- RIGHT: route type + everything about the tyres -->
+              <div class="ic-detail-col">
               {% if cfg.has_route_type %}
-              <div class="ic-image-block">
+              <div class="ic-image-block ic-route-block">
                 <div class="ib-label">Route Type</div>
                 <div class="route-slider-wrap route-edit-control">
                   <span class="route-slider-label route-slider-label-feeder {{ 'active' if (v.route_type or 'feeder') == 'feeder' else '' }}">
@@ -257,15 +264,23 @@
                 <div class="save-hint" id="hint-route-{{ v.id }}"></div>
               </div>
               {% endif %}
-            </div>
 
             <div class="ic-tyres">
               <div class="ib-label">Tyre Tread Depth (mm)</div>
+              <div class="rb-legend"><span><i class="rb-lg-dot"></i> Reading (click a point or a chip)</span><span><i class="rb-lg-avg"></i> Average</span><span><i class="rb-lg-count">×2</i> Same value, one point</span></div>
               <table>
                 {% for row in cfg.rows %}
                   {% for t in row.left + row.right %}
+                  {% set rd = v.tyre_readings.get(t.code) %}
                   <tr>
                     <td class="t-label">{{ t.label }}</td>
+                    <td class="t-bar">
+                      {% if rd and rd|length == 6 %}
+                      <div class="range-bar" data-label="{{ t.label }}" data-readings='{{ rd|tojson }}'></div>
+                      {% else %}
+                      <span class="manual-tag" title="Entered by hand: a single reading, no ESP32 spread">Manual entry</span>
+                      {% endif %}
+                    </td>
                     <td class="t-val {{ 'flag' if v.tyres.get(t.code) is not none and v.tyres.get(t.code)|float < 5 else '' }}">
                       {{ v.tyres.get(t.code, '—') }} mm
                     </td>
@@ -274,6 +289,9 @@
                 {% endfor %}
               </table>
             </div>
+              </div><!-- /ic-detail-col -->
+
+            </div><!-- /ic-body-layout -->
 
           </div>
         </div>
@@ -522,24 +540,36 @@
       },
       {
         title: "Review the Photos",
-        text: "Each card shows the plate and odometer photos the technician took. Type what you see into the box underneath each photo — it updates the header instantly. Or tap <strong>Ask AI</strong> next to either box to let AI take a first guess — always double-check its reading against the photo.",
-        target: () => document.querySelector('.inspection-card.expanded .ic-image-block'),
+        text: "Open a card and the photos sit on the <strong>left</strong>: the <strong>license plate</strong> on top and the <strong>odometer</strong> underneath. Type what you see into the box under each photo — it updates the header instantly. Or tap <strong>Ask AI</strong> next to either box to let AI take a first guess — always double-check its reading against the photo.",
+        target: () => document.querySelector('.inspection-card.expanded .ic-media-col'),
         placement: 'right',
         enter: _tutExpandDemoCard
       },
       {
         title: "Edit the Route Type",
-        text: "For buses and double decker buses, you can correct the Trunk/Feeder route right here if the technician got it wrong.",
+        text: "On the right, buses and double decker buses show a Trunk/Feeder switch at the top — correct it here if the technician got it wrong.",
         target: () => document.querySelector('.inspection-card.expanded .route-edit-control'),
-        placement: 'right',
+        placement: 'bottom',
         enter: _tutExpandDemoCard
       },
       {
         title: "Tyre Tread Readings",
-        text: "The full tyre reading table is further down each card. Readings under 3mm are flagged in red.",
+        text: "Everything about the tyres is on the <strong>right</strong> side of the card: the tread depth (mm) for every tyre. Depths under the safety limit are flagged in red.",
         target: () => document.querySelector('.inspection-card.expanded .ic-tyres'),
-        placement: 'right',
+        placement: 'left',
         enter: _tutExpandDemoCard
+      },
+      {
+        title: "ESP32 Range Bars",
+        text: "Tyres measured with the ESP32 gauge show a <strong>range bar</strong>. The line runs from that tyre's <strong>lowest reading</strong> (left end) to its <strong>highest</strong> (right end), so a long line means the five readings disagreed. Each <strong>gold point</strong> is a reading; readings with the <strong>same value share one point</strong> with a ×2, ×3… badge. The <strong>red diamond</strong> above the line is the <strong>average</strong>. Every reading is also listed as a chip underneath. <strong>Click any point or chip</strong> to see its exact value in a floating label (click again, press Esc, or click elsewhere to close it). Tyres typed in by hand show a <strong>Manual entry</strong> tag instead, because they only have one value.",
+        target: () => document.querySelector('.inspection-card.expanded .range-bar') || document.querySelector('.inspection-card.expanded .ic-tyres'),
+        placement: 'left',
+        enter: _tutExpandDemoCard,
+        // getter: evaluated when the step is shown, after staff.js has loaded
+        get demoHtml() {
+          return '<div class="range-bar" style="margin-top:6px">' +
+            (window.buildRangeBarHtml ? window.buildRangeBarHtml([1.12, 1.2, 1.2, 1.26, 1.14, 1.18], 'Front Left') : '') + '</div>';
+        }
       },
       {
         title: "Convert All Plates at Once",

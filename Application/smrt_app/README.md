@@ -64,7 +64,8 @@ real database before deploying anywhere reachable by the public.
      cropped to that rectangle before saving).
   3. Take a 4:3 odometer photo.
   4. Enter tyre tread depths (mm, 2dp) next to a live diagram that highlights
-     the tyre matching the focused input field.
+     the tyre matching the focused input field — by typing, or by tapping the
+     box and measuring with the ESP32 gauge (see "ESP32 tyre gauge" below).
   5. Tap **Complete** — `last_edited` is stamped automatically server-side.
 - **Staff flow** (`/staff`): filter by Car / Bus / Double Decker Bus / All,
   see each inspection's photos with a text box underneath to type what the
@@ -568,3 +569,109 @@ nothing uploaded yet — confirming every step finds its real target when
 one exists, falls back cleanly when it doesn't, and leaves no stray state
 behind afterward (no open context menus, no leftover selection mode, no
 checked boxes, no modal left open).
+
+
+## ESP32 tyre gauge (5 readings + average per tyre)
+
+Tyres can now be recorded two ways, per tyre, on the same vehicle:
+
+| Method | What is stored |
+|---|---|
+| Typed by hand | One value in `tyres_json` (exactly as before). No entry in `tyre_readings_json`. |
+| ESP32 gauge | The **average** in `tyres_json` (so the spreadsheet export, Fleet Overview, chips and flags keep working unchanged) **plus** all six numbers in the new `tyre_readings_json` column: `{"FL": [r1, r2, r3, r4, r5, avg]}`. |
+
+Old rows that predate the column load fine (they are simply "manual").
+
+### How it works
+
+1. Technician taps a tyre box. The page calls `POST /technician/esp/arm`
+   and shows a pulsing **"Listening for ESP32…"** under that box.
+2. The ESP32 sends `POST /api/esp/measurement` with the body
+   `r1;r2;r3;r4;r5;avg` (six floats separated by `;`).
+3. The server gives the message to the technician who tapped most recently.
+   Their page (polling `/technician/esp/poll` once a second) fills the box
+   with the **6th value (the average) only** and turns it green. All six
+   values are sent back on **Complete** and saved.
+4. **The box keeps listening after it has received a value.** While the
+   technician stays in the box, every new message *replaces* the previous
+   readings (the box updates and a toast says "ESP32 reading updated").
+   Listening stops when the technician types in the box, taps another tyre,
+   taps away from a box that already holds an ESP32 value, or closes/completes
+   the wizard. (A box that has *not* received anything yet keeps waiting even
+   if the phone keyboard is dismissed.) Typing over an ESP32 value turns that
+   tyre into a manual entry (its readings are discarded). Tapping the box
+   again starts a fresh measurement.
+
+`POST /api/esp/measurement` details:
+
+- **Auth:** API key `local-test-key` by default; override with the
+  `ESP_API_KEY` environment variable. Accepted as `X-API-Key: ...`,
+  `Authorization: Bearer ...`, `?api_key=...`, or an `api_key` JSON field.
+- **Body:** raw text (`1.1;1.2;1.3;1.2;1.1;1.18`), a JSON string, or JSON/form
+  with a `data` / `message` / `values` / `measurement` / `payload` field.
+  A trailing `;` is tolerated.
+- **Responses:** `200` accepted · `400` not exactly six numbers, or a value
+  outside 0-30 mm · `401` bad key · `409` nobody is listening (tap a tyre box,
+  then send again).
+- Only one technician should be paired with the board at a time: if several
+  have a box armed, the most recently tapped one receives the reading.
+- While a page is open, it polls once a second, which keeps its box armed.
+  If the page goes away (tab closed, phone asleep) the box is dropped after
+  120 s without a poll (`ESP_IDLE_TIMEOUT_SECONDS`). Listening state lives in
+  memory, so run a single server process (the default `python3 app.py` is fine).
+
+`esp_test_sender.py` imitates the board so you can test without hardware:
+`python3 esp_test_sender.py 1.1 1.2 1.3 1.2 1.1` (it computes the average), or
+pass six numbers to send them exactly as given.
+
+### Staff dashboard: range bars
+
+In an expanded card, every ESP32-measured tyre shows a range bar:
+
+- The line runs **exactly from the lowest reading to the highest reading** —
+  both ends of the line are checkpoints, and nothing extends beyond them.
+- Each **gold point** is a reading. Readings with the **same value share one
+  point**, with a ×2 / ×3… badge; clicking it names which readings they are
+  (e.g. "Readings 3, 4 and 5: 12.00 mm"). If all five readings are identical
+  there is a single point and no line.
+- The **red diamond** above the line is the average (it never covers a point).
+- **Every individual reading is also listed as a chip** (R1 … R5) under the
+  bar. Hovering a chip lights up its point; clicking a chip or a point shows
+  the exact value in a floating label (click again, Esc, or click elsewhere to
+  close).
+- Manually typed tyres show a "Manual entry" tag instead, since they only
+  have one value.
+
+### Tutorials
+
+Technician tutorial: the tyre step now mentions both methods, plus two new
+steps ("Measure with the ESP32 Gauge" with a live listening-to-received demo
+that also explains re-measuring replaces the old value, and "Typing Still
+Works"). Staff tutorial: new "ESP32 Range Bars" step with a sample bar that
+includes two identical readings merged into one point.
+
+### Other small fixes made along the way
+
+- Number-input spinner arrows are hidden on tyre boxes (a click on a spinner
+  typed a stray `0`, which would cancel listening).
+
+
+## Staff dashboard: expanded card layout (two columns)
+
+Opening a vehicle card no longer fills the screen with the photos:
+
+- **Left column (270 px):** the **license plate** photo on top and the
+  **odometer** photo underneath, both shown small (plate max 78 px tall,
+  odometer max 135 px tall), each with its text box and *Ask AI* button right
+  below it.
+- **Right column:** the **Route Type** switch (buses / double deckers only) at
+  the top, then **Tyre Tread Depth** - one row per tyre with its range bar,
+  the five reading chips and the average.
+- Screens narrower than about 720 px stack the columns (photos side by side
+  when they fit); on phones each tyre becomes "name + average" on one line
+  with its range bar full width underneath.
+- Staff tutorial: the photo, route type, tyre and range-bar steps now point at
+  the new positions.
+
+Layout lives in `templates/staff.html` (`ic-body-layout` > `ic-media-col` /
+`ic-detail-col`) and the last block of `static/css/style.css`.

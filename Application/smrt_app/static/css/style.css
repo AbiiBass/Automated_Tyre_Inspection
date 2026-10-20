@@ -2263,3 +2263,185 @@ button { font-family: inherit; cursor: pointer; }
   line-height: 1.5;
 }
 .fleet-chart-unavailable .fa { margin-right: 6px; }
+
+
+/* ==========================================================================
+   ESP32 tyre readings
+   ========================================================================== */
+
+/* --- Technician: listening / received status under a tyre field --- */
+.tyre-field .esp-status { display: none; margin-top: 5px; font-size: 11.5px; font-weight: 600; line-height: 1.3; }
+.tyre-field .esp-status.show { display: flex; align-items: center; gap: 6px; }
+.tyre-field .esp-status.listening { color: var(--gold-deep); }
+.tyre-field .esp-status.received { color: var(--success); }
+.tyre-field:has(.esp-status.listening) input { border-color: var(--gold); background: #FFFCF5; }
+.tyre-field:has(.esp-status.received) input { border-color: #9CC5AC; background: #F4FAF6; }
+.esp-pulse {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 0 0 rgba(169, 119, 44, 0.55);
+  animation: espPulse 1.2s infinite;
+  flex: 0 0 auto;
+}
+@keyframes espPulse {
+  0%   { box-shadow: 0 0 0 0 rgba(169, 119, 44, 0.55); }
+  70%  { box-shadow: 0 0 0 9px rgba(169, 119, 44, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(169, 119, 44, 0); }
+}
+
+/* --- Staff: range bar --- */
+.ic-tyres td.t-bar { width: 58%; padding: 6px 6px; }
+.manual-tag {
+  display: inline-block; font-size: 11px; font-weight: 600; color: var(--grey-text);
+  background: #F1EDE4; border-radius: 999px; padding: 2px 9px;
+}
+.rb-legend { display: flex; gap: 16px; font-size: 11.5px; color: var(--grey-text); margin: -2px 0 6px; flex-wrap: wrap; }
+.rb-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.rb-lg-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--gold); display: inline-block; }
+.rb-lg-avg { width: 10px; height: 10px; background: var(--red); transform: rotate(45deg); display: inline-block; border-radius: 2px; }
+.rb-lg-count { font-size: 9px; font-weight: 700; background: var(--black); color: #fff; border-radius: 8px; padding: 0 5px; line-height: 14px; }
+
+.range-bar { min-width: 170px; }
+/* The stage's side margin leaves room for the half-dots at both ends of the line. */
+.rb-stage { position: relative; height: 58px; margin: 0 26px; }
+/* The line is exactly lowest reading -> highest reading, nothing before or after. */
+.rb-range {
+  position: absolute; left: 0; right: 0; top: 24px; height: 5px; border-radius: 999px;
+  background: linear-gradient(90deg, #E2CC9D, #C9A55E);
+}
+.rb-avg-stem { position: absolute; top: 15px; height: 11px; width: 2px; background: var(--red); transform: translateX(-50%); z-index: 1; }
+.rb-point {
+  position: absolute; top: 26px; width: 16px; height: 16px; padding: 0;
+  transform: translate(-50%, -50%);
+  border-radius: 50%; border: 2px solid #fff; background: var(--gold);
+  box-shadow: 0 1px 3px rgba(20, 16, 13, 0.35);
+  cursor: pointer; transition: transform .12s ease, box-shadow .12s ease;
+  z-index: 2;
+}
+.rb-point:hover, .rb-point:focus-visible, .rb-point.hl { transform: translate(-50%, -50%) scale(1.25); outline: none; }
+.rb-point.hl { box-shadow: 0 0 0 3px rgba(169, 119, 44, 0.35); }
+.rb-point.selected { transform: translate(-50%, -50%) scale(1.35); box-shadow: 0 0 0 3px rgba(169, 119, 44, 0.4); }
+.rb-count {
+  position: absolute; top: 50%; left: calc(100% + 3px); transform: translateY(-50%); pointer-events: none;
+  font-size: 9px; font-weight: 700; line-height: 14px; padding: 0 5px;
+  background: var(--black); color: #fff; border-radius: 8px; white-space: nowrap;
+}
+.rb-point.rb-avg {
+  top: 8px; width: 15px; height: 15px; border-radius: 3px; background: var(--red); z-index: 3;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+.rb-point.rb-avg:hover, .rb-point.rb-avg:focus-visible { transform: translate(-50%, -50%) rotate(45deg) scale(1.2); }
+.rb-point.rb-avg.selected { transform: translate(-50%, -50%) rotate(45deg) scale(1.3); box-shadow: 0 0 0 3px rgba(200, 16, 46, 0.3); }
+.rb-end { position: absolute; top: 40px; transform: translateX(-50%); font-size: 10.5px; color: var(--grey-text); white-space: nowrap; }
+
+/* every individual reading, listed under the bar */
+.rb-chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 2px 26px 0; }
+.rb-chip {
+  font: inherit; font-size: 11px; color: var(--grey-text);
+  background: #F5F1E8; border: 1px solid transparent; border-radius: 999px;
+  padding: 2px 9px; cursor: pointer; transition: background .12s ease, border-color .12s ease;
+}
+.rb-chip b { color: var(--black-soft); font-weight: 700; }
+.rb-chip:hover, .rb-chip.hl { background: #EFE0BF; border-color: var(--gold); }
+
+.rb-tip {
+  position: fixed; z-index: 4000; pointer-events: none;
+  background: var(--black); color: #fff; font-size: 12.5px; font-weight: 600;
+  padding: 7px 11px; border-radius: 8px; white-space: nowrap;
+  box-shadow: var(--shadow-pop);
+  opacity: 0; transform: translateY(4px); transition: opacity .12s ease, transform .12s ease;
+}
+.rb-tip.show { opacity: 1; transform: translateY(0); }
+.rb-tip.is-avg { background: var(--red-dark); }
+
+@media (max-width: 560px) {
+  .ic-tyres td.t-bar { width: 56%; padding: 6px 2px; }
+  .range-bar { min-width: 130px; }
+  .rb-stage, .rb-chips { margin-left: 22px; margin-right: 22px; }
+}
+
+/* Hide the number-input spinner arrows on tyre fields: tapping/clicking the
+   box now means "listen for the ESP32", and a click on a spinner would
+   otherwise type a stray "0" and cancel listening. */
+.tyre-field input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+.tyre-field input[type=number]::-webkit-outer-spin-button,
+.tyre-field input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+/* "still listening" hint shown on a box that already holds an ESP32 value */
+.tyre-field .esp-status .esp-live { display: inline-flex; align-items: center; gap: 5px; color: var(--gold-deep); margin-left: 4px; }
+.tyre-field .esp-status.received { flex-wrap: wrap; }
+
+
+/* ==========================================================================
+   Staff dashboard: expanded card layout
+   LEFT  = small photos (license plate on top, odometer underneath)
+   RIGHT = route type + all the tyre tread depth information
+   ========================================================================== */
+.ic-body-layout {
+  display: grid;
+  grid-template-columns: 270px minmax(0, 1fr);
+  gap: 26px;
+  align-items: start;
+}
+
+/* ---- left column ---- */
+.ic-media-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.ic-media-col .ic-image-block {
+  margin: 0;
+  padding: 10px 12px 8px;
+  background: #FBF8F1;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+}
+.ic-media-col .ib-label { margin-bottom: 8px; }
+.ic-media-col .ic-image-block img {
+  width: auto;
+  max-width: 100%;
+  margin: 0 auto 8px;
+  background: #1c1c1c;
+}
+.ic-media-col .ic-image-block img.plate-img { max-height: 78px; aspect-ratio: auto; object-fit: contain; }
+.ic-media-col .ic-image-block img.odo-img   { max-height: 135px; aspect-ratio: auto; object-fit: contain; }
+.ic-media-col .ic-image-block input { padding: 8px 10px; font-size: 14px; }
+.ic-media-col .ocr-input-row { gap: 6px; }
+.ic-media-col .ocr-input-row input { min-width: 0; flex: 1 1 110px; }
+.ic-media-col .btn-ask-ai { padding: 0 9px; font-size: 12px; white-space: nowrap; }
+.ic-media-col .ic-image-block .save-hint { margin-top: 2px; height: 12px; }
+
+/* ---- right column ---- */
+.ic-detail-col { min-width: 0; }
+.ic-detail-col .ic-route-block {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px;
+  margin: 0 0 14px; padding: 0 0 12px;
+  border-bottom: 1px dashed var(--hairline);
+}
+.ic-detail-col .ic-route-block .ib-label { margin: 0; }
+.ic-detail-col .ic-route-block .save-hint { height: auto; margin: 0; }
+.ic-detail-col .ic-tyres { margin-top: 0; border-top: 0; padding-top: 0; }
+.ic-detail-col .ic-tyres table { table-layout: auto; }
+.ic-detail-col .ic-tyres td.t-label { width: 120px; white-space: nowrap; }
+.ic-detail-col .ic-tyres td.t-val { width: 84px; white-space: nowrap; }
+.ic-detail-col .ic-tyres td.t-bar { width: auto; }
+.ic-detail-col .ic-tyres tr + tr td { border-top: 1px solid #F3EEE3; }
+
+/* ---- narrow screens: stack the columns (photos side by side when they fit) ---- */
+@media (max-width: 720px) {
+  .ic-body-layout { grid-template-columns: 1fr; gap: 18px; }
+  .ic-media-col { flex-direction: row; flex-wrap: wrap; }
+  .ic-media-col .ic-image-block { flex: 1 1 230px; }
+}
+@media (max-width: 560px) {
+  .ic-media-col { flex-direction: column; flex-wrap: nowrap; }
+  .ic-media-col .ic-image-block { flex: 0 0 auto; }
+  /* each tyre becomes: name + average on one line, range bar full width below */
+  .ic-detail-col .ic-tyres table, .ic-detail-col .ic-tyres tbody { display: block; }
+  .ic-detail-col .ic-tyres tr {
+    display: grid; grid-template-columns: 1fr auto; align-items: center;
+    padding: 6px 0; border-top: 1px solid #F3EEE3;
+  }
+  .ic-detail-col .ic-tyres tr:first-child { border-top: 0; }
+  .ic-detail-col .ic-tyres tr td { border-top: 0 !important; width: auto !important; padding: 2px 0; }
+  .ic-detail-col .ic-tyres td.t-label { white-space: normal; }
+  .ic-detail-col .ic-tyres td.t-bar { grid-column: 1 / -1; order: 3; }
+  .ic-detail-col .ic-tyres td.t-val { text-align: right; }
+}
