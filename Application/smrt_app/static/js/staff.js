@@ -814,3 +814,167 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.inspection-card').forEach(updateCardCompletionState);
   updateScrollTopButtonVisibility();
 });
+
+
+/* ==========================================================================
+   Tyre range bars (ESP32 readings)
+   An ESP32 tyre carries [r1, r2, r3, r4, r5, average].
+
+   - The line runs from the LOWEST reading to the HIGHEST reading: both ends
+     of the line are checkpoints, nothing extends beyond them.
+   - Readings with the same value share ONE checkpoint (a small "x2" badge
+     says how many), and its label lists which readings they are.
+   - If all five readings are identical there is just one checkpoint and no line.
+   - The average is the red diamond above the line, so it can never cover a
+     checkpoint, and every individual reading is also listed as a chip under
+     the bar. Hover a chip to light up its checkpoint, click to read it out.
+   ========================================================================== */
+(function () {
+  function fmt(n) { return Number(n).toFixed(2); }
+
+  function listNames(idx) {                 // [0,2,3] -> "Readings 1, 3 and 4"
+    const n = idx.map(i => i + 1);
+    if (n.length === 1) return 'Reading ' + n[0];
+    return 'Readings ' + n.slice(0, -1).join(', ') + ' and ' + n[n.length - 1];
+  }
+
+  function groupReadings(reads) {           // same value (to 2 dp) -> same checkpoint
+    const groups = [];
+    reads.forEach((v, i) => {
+      const key = fmt(v);
+      let g = groups.find(x => x.key === key);
+      if (!g) { g = { key, value: v, idx: [] }; groups.push(g); }
+      g.idx.push(i);
+    });
+    return groups;
+  }
+
+  // Exposed so the tutorial can draw the very same bar as a demo.
+  window.buildRangeBarHtml = function (values, label) {
+    const lbl = label || 'Tyre';
+    const reads = values.slice(0, 5).map(Number);
+    const avg = Number(values[5]);
+    const groups = groupReadings(reads);
+    const lo = Math.min(...groups.map(g => g.value));
+    const hi = Math.max(...groups.map(g => g.value));
+    const span = hi - lo;
+    const pct = v => (span > 0 ? ((v - lo) / span) * 100 : 50);
+    const avgPct = Math.min(100, Math.max(0, pct(avg)));
+
+    let stage = '';
+    if (span > 0) stage += '<div class="rb-range"></div>';
+    stage += `<div class="rb-avg-stem" style="left:${avgPct.toFixed(2)}%"></div>`;
+    stage += `<button type="button" class="rb-point rb-avg" style="left:${avgPct.toFixed(2)}%"` +
+             ` data-tip="${lbl} · Average: ${fmt(avg)} mm" aria-label="Average: ${fmt(avg)} mm"></button>`;
+    groups.forEach(g => {
+      const name = listNames(g.idx);
+      stage += `<button type="button" class="rb-point" style="left:${pct(g.value).toFixed(2)}%"` +
+               ` data-idx="${g.idx.join(' ')}" data-tip="${lbl} · ${name}: ${fmt(g.value)} mm"` +
+               ` aria-label="${name}: ${fmt(g.value)} mm">` +
+               (g.idx.length > 1 ? `<span class="rb-count">×${g.idx.length}</span>` : '') +
+               '</button>';
+    });
+    if (span > 0) {
+      stage += `<span class="rb-end" style="left:0">${fmt(lo)}</span><span class="rb-end" style="left:100%">${fmt(hi)}</span>`;
+    } else {
+      stage += `<span class="rb-end" style="left:50%">${fmt(lo)}</span>`;
+    }
+
+    const chips = reads.map((v, i) =>
+      `<button type="button" class="rb-chip" data-idx="${i}">R${i + 1} <b>${fmt(v)}</b></button>`
+    ).join('');
+
+    return `<div class="rb-stage">${stage}</div><div class="rb-chips">${chips}</div>`;
+  };
+
+  function initRangeBars(root) {
+    (root || document).querySelectorAll('.range-bar:not([data-ready])').forEach(el => {
+      let values;
+      try { values = JSON.parse(el.getAttribute('data-readings')); } catch (e) { return; }
+      if (!Array.isArray(values) || values.length !== 6) return;
+      el.innerHTML = window.buildRangeBarHtml(values, el.getAttribute('data-label'));
+      el.setAttribute('data-ready', '1');
+    });
+  }
+
+  /* ---- floating label (one shared element) ---- */
+  let tipEl = null, tipFor = null;
+  function hideTip() {
+    if (tipEl) tipEl.classList.remove('show');
+    if (tipFor) tipFor.classList.remove('selected');
+    tipFor = null;
+  }
+  function showTip(point) {
+    if (!tipEl) {
+      tipEl = document.createElement('div');
+      tipEl.className = 'rb-tip';
+      tipEl.setAttribute('role', 'status');
+      document.body.appendChild(tipEl);
+    }
+    if (tipFor) tipFor.classList.remove('selected');
+    tipFor = point;
+    point.classList.add('selected');
+    tipEl.textContent = point.getAttribute('data-tip');
+    tipEl.classList.toggle('is-avg', point.classList.contains('rb-avg'));
+    tipEl.classList.add('show');
+    const r = point.getBoundingClientRect();
+    const w = tipEl.offsetWidth, h = tipEl.offsetHeight;
+    let left = r.left + r.width / 2 - w / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+    let top = r.top - h - 10;
+    if (top < 8) top = r.bottom + 10;       // flip below if there's no room above
+    tipEl.style.left = left + 'px';
+    tipEl.style.top = top + 'px';
+  }
+
+  function pointsForChip(chip) {
+    const bar = chip.closest('.range-bar');
+    return bar ? bar.querySelector(`.rb-point[data-idx~="${chip.getAttribute('data-idx')}"]`) : null;
+  }
+
+  document.addEventListener('click', function (e) {
+    const t = e.target.closest ? e.target : null;
+    const pt = t && t.closest('.rb-point');
+    const chip = t && t.closest('.rb-chip');
+    const target = pt || (chip && pointsForChip(chip));
+    if (target) {
+      e.stopPropagation();
+      if (tipFor === target) hideTip(); else showTip(target);
+      return;
+    }
+    hideTip();
+  }, true);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') hideTip(); });
+  window.addEventListener('scroll', hideTip, true);
+  window.addEventListener('resize', hideTip);
+
+  /* ---- hover: light up the chip(s) and checkpoint that belong together ---- */
+  function setHighlight(el, on) {
+    const bar = el.closest && el.closest('.range-bar');
+    if (!bar) return;
+    bar.querySelectorAll('.hl').forEach(x => x.classList.remove('hl'));
+    if (!on) return;
+    const raw = el.getAttribute('data-idx');
+    if (!raw) return;
+    const wanted = raw.split(' ');
+    bar.querySelectorAll('[data-idx]').forEach(x => {
+      const mine = x.getAttribute('data-idx').split(' ');
+      if (mine.some(i => wanted.includes(i))) x.classList.add('hl');
+    });
+  }
+  document.addEventListener('mouseover', e => {
+    const el = e.target.closest && e.target.closest('.rb-point[data-idx], .rb-chip');
+    if (el) setHighlight(el, true);
+  });
+  document.addEventListener('mouseout', e => {
+    const el = e.target.closest && e.target.closest('.rb-point[data-idx], .rb-chip');
+    if (el) setHighlight(el, false);
+  });
+
+  window.initRangeBars = initRangeBars;
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => initRangeBars());
+  } else {
+    initRangeBars();
+  }
+})();

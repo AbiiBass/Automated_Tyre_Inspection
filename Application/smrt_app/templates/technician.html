@@ -154,7 +154,7 @@
 
           <div class="form-section" id="tyre-section">
             <div class="fs-title"><span class="num" id="tyre-step-num">4</span> Tyre Tread Depth (mm)</div>
-            <div class="fs-hint">Tap a box to see which tyre it is on the diagram. Enter up to 2 decimal places.</div>
+            <div class="fs-hint">Tap a box to see which tyre it is on the diagram, then <strong>measure with the ESP32 gauge</strong> (the box fills in by itself) or <strong>type the depth</strong> (up to 2 decimal places).</div>
             <div class="tyre-layout">
               <div class="tyre-diagram" id="tyre-diagram"></div>
               <div class="tyre-inputs" id="tyre-inputs"></div>
@@ -228,6 +228,39 @@
     }
 
     let techTutTyreInterval = null;
+    let techTutEspTimer = null;
+
+    // Purely visual demo of the ESP32 "listening -> received" cycle on the
+    // first tyre box. It never touches the real tyreValues / tyreReadings.
+    function _tutEspDemoStart() {
+      _tutEspDemoStop();
+      const input = document.getElementById('input-FL');
+      if (!input) return;
+      let phase = 0;
+      const tick = () => {
+        if (phase % 2 === 0) {
+          input.value = '';
+          highlightTyre('FL');
+          setEspStatus('FL', 'listening');
+        } else {
+          input.value = '1.18';
+          setEspStatus('FL', 'received');
+        }
+        phase++;
+      };
+      tick();
+      techTutEspTimer = setInterval(tick, 1900);
+    }
+    function _tutEspDemoStop() {
+      clearInterval(techTutEspTimer);
+      techTutEspTimer = null;
+      const input = document.getElementById('input-FL');
+      if (input) {
+        input.value = (tyreValues['FL'] !== undefined) ? tyreValues['FL'] : '';
+        setEspStatus('FL', (tyreReadings && tyreReadings['FL']) ? 'received' : 'none');
+      }
+      document.querySelectorAll('#tyre-diagram .tyre-dot').forEach(d => d.classList.remove('active'));
+    }
 
     const DEMO_PLATE_HTML = `
       <div class="demo-camera-frame">
@@ -296,7 +329,7 @@
       },
       {
         title: "Enter Tyre Tread Depths",
-        text: "Tap into any tyre's box — watch the matching tyre light up gold on the diagram, like it's doing now. That's how you always know which tyre you're measuring. Enter depth in millimetres, up to 2 decimal places.",
+        text: "Tap into any tyre's box — watch the matching tyre light up gold on the diagram, like it's doing now. That's how you always know which tyre you're measuring. You can <strong>type</strong> the depth in millimetres (up to 2 decimal places) or <strong>measure it with the ESP32 gauge</strong> — the next two steps show both.",
         target: () => document.getElementById('tyre-section'),
         placement: 'top',
         enter: () => {
@@ -315,6 +348,21 @@
           clearInterval(techTutTyreInterval);
           document.querySelectorAll('#tyre-diagram .tyre-dot').forEach(d => d.classList.remove('active'));
         }
+      },
+      {
+        title: "Measure with the ESP32 Gauge",
+        text: "Instead of typing, just <strong>tap the tyre's box</strong> and measure with the ESP32 gauge. The box shows <strong>“Listening for ESP32…”</strong> with a pulsing dot; when the gauge sends its 5 readings, the box fills in by itself with the <strong>average</strong> and turns green — like the first box is doing now. Only the average is shown here, but all 5 readings are saved for the staff team. <strong>The box keeps listening while you stay in it</strong>: measure again and the new reading <strong>replaces</strong> the old one. Tap away (or tap another tyre) when you're happy with the value.",
+        target: () => document.getElementById('tyre-section'),
+        placement: 'top',
+        enter: () => { _tutEnsureWizardStep2(); _tutEspDemoStart(); },
+        exit: _tutEspDemoStop
+      },
+      {
+        title: "Typing Still Works",
+        text: "No gauge, or it isn't connecting? Just type the depth yourself. The moment you type in a box, it stops listening and the entry is saved as a <strong>manual</strong> value (one number, no 5-reading spread). Editing an ESP32 value by hand does the same — it becomes a manual entry. Each tyre is independent, so you can mix both methods on the same vehicle.",
+        target: () => document.getElementById('tyre-section'),
+        placement: 'top',
+        enter: _tutEnsureWizardStep2
       },
       {
         title: "Complete the Inspection",

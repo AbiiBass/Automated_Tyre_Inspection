@@ -8,6 +8,9 @@ let plateImageData = null;
 let odometerImageData = null;
 let editingId = null;
 let tyreValues = {};
+let tyreReadings = {};   // ESP32 only: { FL: [r1..r5, avg] }  (manual tyres have no entry)
+let espPendingCode = null; // a field that has asked the server to listen but hasn't heard back yet
+let espListen = null;    // { token, code, timer } while a field is waiting for the ESP32
 let routeType = 'feeder';
 let activeCameraMode = null; // 'plate' | 'odometer'
 let mediaStream = null;
@@ -46,6 +49,8 @@ function resetWizardState() {
   odometerImageData = null;
   editingId = null;
   tyreValues = {};
+  tyreReadings = {};
+  stopEspListening(true);
   routeType = 'feeder';
   document.getElementById('wizard-title').textContent = 'New Inspection';
   document.querySelectorAll('.type-card').forEach(c => c.classList.remove('selected'));
@@ -63,6 +68,7 @@ function openAddWizard() {
 }
 
 function closeWizard() {
+  stopEspListening(true);
   document.getElementById('wizard-overlay').classList.remove('open');
 }
 
@@ -215,20 +221,148 @@ function buildTyreField(tyre) {
   input.inputMode = 'decimal';
   if (tyreValues[tyre.code] !== undefined) input.value = tyreValues[tyre.code];
 
-  input.addEventListener('focus', () => highlightTyre(tyre.code));
+  // Tapping a field = "I'm about to measure this tyre". The page starts
+  // listening for the ESP32; typing a number by hand is still allowed.
+  input.addEventListener('focus', () => {
+    highlightTyre(tyre.code);
+    startEspListening(tyre.code);
+  });
+  // A box that already holds an ESP32 value keeps listening for a newer one
+  // only while it stays selected; tapping away ends it. (A box that has NOT
+  // received anything yet keeps waiting, so dismissing the phone keyboard
+  // doesn't cancel a measurement you're about to take.)
+  input.addEventListener('blur', () => {
+    if (espListen && espListen.code === tyre.code && tyreReadings[tyre.code]) {
+      stopEspListening(true);
+    }
+  });
   input.addEventListener('input', () => {
     tyreValues[tyre.code] = input.value;
+    // Typing by hand turns this tyre back into a plain manual entry.
+    delete tyreReadings[tyre.code];
+    if (espListen && espListen.code === tyre.code) stopEspListening(true);
+    setEspStatus(tyre.code, 'none');
   });
 
   const unit = document.createElement('span');
   unit.className = 'unit';
   unit.textContent = 'mm';
 
+  const status = document.createElement('div');
+  status.className = 'esp-status';
+  status.id = `esp-status-${tyre.code}`;
+
   wrap.appendChild(input);
   wrap.appendChild(unit);
   field.appendChild(label);
   field.appendChild(wrap);
+  field.appendChild(status);
+
+  if (tyreReadings[tyre.code]) setEspStatus(tyre.code, 'received');
   return field;
+}
+
+/* ---------------------------- ESP32 listening ---------------------------- */
+function setEspStatus(code, state) {
+  const el = document.getElementById(`esp-status-${code}`);
+  if (!el) return;
+  el.className = 'esp-status' + (state === 'none' ? '' : ` show ${state}`);
+  if (state === 'listening') {
+    el.innerHTML = '<span class="esp-pulse"></span> Listening for ESP32… measure now';
+  } else if (state === 'received') {
+    const live = espListen && espListen.code === code;
+    el.innerHTML = '<i class="fa fa-microchip" aria-hidden="true"></i> ESP32 average of 5 readings' +
+      (live ? ' <span class="esp-live"><span class="esp-pulse"></span> listening for a new one</span>' : '');
+  } else {
+    el.innerHTML = '';
+  }
+}
+
+async function startEspListening(code) {
+  if (espListen && espListen.code === code) return;        // already listening here
+  if (espPendingCode === code) return;                     // arm request already in flight
+  stopEspListening(true);                                  // only one field listens at a time
+  espPendingCode = code;
+  if (!tyreReadings[code]) setEspStatus(code, 'listening');
+  try {
+    const res = await fetch('/technician/esp/arm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tyre: code })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not start listening');
+    if (espPendingCode !== code) {
+      // The technician moved on (typed, tapped another tyre, closed the wizard)
+      // while the request was in flight - release this slot straight away.
+      fetch('/technician/esp/disarm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: data.token })
+      }).catch(() => {});
+      return;
+    }
+    espPendingCode = null;
+    espListen = { token: data.token, code, timer: null, seq: 0 };
+    espListen.timer = setInterval(pollEsp, 1000);
+    setEspStatus(code, tyreReadings[code] ? 'received' : 'listening');
+  } catch (err) {
+    if (espPendingCode === code) {
+      espPendingCode = null;
+      setEspStatus(code, tyreReadings[code] ? 'received' : 'none');   // manual typing still works
+    }
+  }
+}
+
+async function pollEsp() {
+  if (!espListen) return;
+  const { token, code } = espListen;
+  try {
+    const res = await fetch(`/technician/esp/poll?token=${encodeURIComponent(token)}&after=${espListen.seq}`);
+    const data = await res.json();
+    if (!espListen || espListen.token !== token) return;   // superseded meanwhile
+    if (data.status === 'received') {
+      // Keep listening: a later message replaces this one.
+      espListen.seq = data.seq;
+      applyEspResult(code, data.values);
+    } else if (data.status === 'expired') {
+      stopEspListening(false);
+      setEspStatus(code, tyreReadings[code] ? 'received' : 'none');
+    }
+  } catch (err) { /* transient network error - keep listening */ }
+}
+
+function stopEspListening(tellServer) {
+  if (espPendingCode) {
+    const pc = espPendingCode;
+    espPendingCode = null;
+    if (tellServer) setEspStatus(pc, tyreReadings[pc] ? 'received' : 'none');
+  }
+  if (!espListen) return;
+  clearInterval(espListen.timer);
+  const { token, code } = espListen;
+  espListen = null;
+  if (tellServer) {
+    setEspStatus(code, tyreReadings[code] ? 'received' : 'none');
+    fetch('/technician/esp/disarm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token })
+    }).catch(() => {});
+  }
+}
+
+function applyEspResult(code, values) {
+  if (!Array.isArray(values) || values.length !== 6) return;
+  const avg = parseFloat(parseFloat(values[5]).toFixed(2));
+  const replaced = !!tyreReadings[code];
+  tyreReadings[code] = values.map(Number);   // all six are kept and saved (replaces any older set)
+  tyreValues[code] = avg;                    // only the average is shown
+  const input = document.getElementById(`input-${code}`);
+  if (input) input.value = avg.toFixed(2);
+  setEspStatus(code, 'received');
+  markFilledDots();
+  showToast(`${replaced ? 'ESP32 reading updated' : 'ESP32 reading received'} ✔  (${avg.toFixed(2)} mm)`);
 }
 
 function highlightTyre(code) {
@@ -366,6 +500,7 @@ function validateBeforeSubmit() {
 }
 
 async function submitInspection() {
+  stopEspListening(true);
   if (!validateBeforeSubmit()) return;
 
   const cleanedTyres = {};
@@ -379,7 +514,8 @@ async function submitInspection() {
     plate_image: plateImageData,
     odometer_image: odometerImageData,
     route_type: routeType,
-    tyres: cleanedTyres
+    tyres: cleanedTyres,
+    tyre_readings: tyreReadings   // ESP32 tyres only: [r1..r5, avg]; server re-checks
   };
 
   const btn = document.getElementById('complete-btn');
@@ -418,6 +554,7 @@ async function editVehicle(id) {
     plateImageData = data.plate_image || null;
     odometerImageData = data.odometer_image || null;
     tyreValues = data.tyres || {};
+    tyreReadings = data.tyre_readings || {};
     routeType = data.route_type === 'trunk' ? 'trunk' : 'feeder';
 
     document.getElementById('wizard-title').textContent = 'Edit Inspection';
