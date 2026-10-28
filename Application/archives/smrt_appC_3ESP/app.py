@@ -1,0 +1,1839 @@
+import os
+import re
+import json
+import uuid
+import threading
+import zipfile
+from datetime import datetime, timedelta
+from functools import wraps
+
+from flask import (
+    Flask, render_template, request, redirect, url_for,
+    session, jsonify, send_file, flash
+)
+from openpyxl import Workbook, load_workbook
+from openpyxl.drawing.image import Image as XLImage
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+from openpyxl.chart import LineChart, Reference
+from io import BytesIO
+
+import psycopg
+
+# Lakebase Postgres + Neon Object Storage (see db.py). Vehicles, users and
+# fleet history live in Postgres; plate/odometer photos live in the bucket.
+import db
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+app = Flask(__name__)
+app.secret_key = "smrt-fleet-inspection-secret-key-change-in-production"
+
+db.init()
+
+# ---------------------------------------------------------------------------
+# User accounts live in the Postgres `users` table. In production, replace
+# plain-text passwords with hashes (e.g. werkzeug.security).
+# ---------------------------------------------------------------------------
+def read_all_users():
+    """Every user account as a list of dicts, oldest first."""
+    return db.list_users()
+
+
+def check_password(username, password):
+    user = db.get_user(username)
+    return bool(user) and user["password"] == password
+
+
+
+def _p(code, label):
+    return {"code": code, "label": label}
+
+
+VEHICLE_CONFIG = {
+    "car": {
+        "label": "Car",
+        "icon": "car.png",
+        "tyre_count": 4,
+        "has_route_type": False,
+        "rows": [
+            {"row": "Front", "left": [_p("FL", "Front Left")],  "right": [_p("FR", "Front Right")]},
+            {"row": "Back",  "left": [_p("BL", "Back Left")],   "right": [_p("BR", "Back Right")]},
+        ],
+    },
+    "bus": {
+        "label": "Bus",
+        "icon": "bus.png",
+        "tyre_count": 6,
+        "has_route_type": True,
+        "rows": [
+            {"row": "Front", "left": [_p("FL", "Front Left")], "right": [_p("FR", "Front Right")]},
+            {"row": "Back",  "left": [_p("BL1", "Back Left 1"), _p("BL2", "Back Left 2")],
+                              "right": [_p("BR1", "Back Right 1"), _p("BR2", "Back Right 2")]},
+        ],
+    },
+    "doubledecker": {
+        "label": "Double Decker Bus",
+        "icon": "double-decker-bus.png",
+        "tyre_count": 10,
+        "has_route_type": True,
+        "rows": [
+            {"row": "Front",  "left": [_p("FL", "Front Left")], "right": [_p("FR", "Front Right")]},
+            {"row": "Middle", "left": [_p("ML1", "Middle Left 1"), _p("ML2", "Middle Left 2")],
+                               "right": [_p("MR1", "Middle Right 1"), _p("MR2", "Middle Right 2")]},
+            {"row": "Back",   "left": [_p("BL1", "Back Left 1"), _p("BL2", "Back Left 2")],
+                               "right": [_p("BR1", "Back Right 1"), _p("BR2", "Back Right 2")]},
+        ],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Vehicle helpers
+# ---------------------------------------------------------------------------
+IMAGE_KINDS = ("plate", "odometer")
+
+
+def _with_image_urls(row):
+    """Rows hold object keys; pages and the technician JS expect
+    plate_image / odometer_image to be something an <img> can load. Point
+    them at /vehicle_image, versioned by key so a new photo is never
+    served from a stale browser cache."""
+    if row is None:
+        return None
+    row = dict(row)
+    for kind in IMAGE_KINDS:
+        key = row.get(f"{kind}_image_key") or ""
+        row[f"{kind}_image"] = (
+            f"/vehicle_image/{row['id']}/{kind}?v={key.rsplit('/', 1)[-1]}" if key else ""
+        )
+    return row
+
+
+def read_all():
+    return [_with_image_urls(r) for r in db.list_vehicles()]
+
+
+def get_vehicle(vid):
+    return _with_image_urls(db.get_vehicle(vid))
+
+
+def find_row(rows, vid):
+    for r in rows:
+        if r["id"] == vid:
+            return r
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Fleet Overview: historical snapshots built from uploaded spreadsheets
+# ---------------------------------------------------------------------------
+# The live dashboard only ever holds *current* state (one row per vehicle,
+# overwritten on every edit) — there's no history to chart from it. Fleet
+# Overview instead accumulates one row per (plate, snapshot date) every
+# time staff upload a spreadsheet export, so the same plate can show up
+# many times over many uploads, each capturing what its readings were on
+# that date. That history is what makes the trend charts possible.
+VEHICLE_LABEL_TO_KEY = {cfg["label"].strip().lower(): key for key, cfg in VEHICLE_CONFIG.items()}
+ROUTE_LABEL_TO_KEY = {"feeder": "feeder", "trunk": "trunk"}
+
+
+def read_fleet_history():
+    return db.list_fleet_history()
+
+
+def _normalize_snapshot_date(value):
+    """Accepts either the plain 'YYYY-MM-DD HH:MM:SS' string our own
+    exports use, or a datetime object (what openpyxl hands back if Excel
+    re-saved the cell as a real Date). Returns the normalized string, or
+    None if it can't be understood at all."""
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+    return None
+
+
+def _extract_numeric(text):
+    """Pulls the first number out of a free-typed field like '45,230 km'
+    or '45230.5'. Returns a float, or None if nothing numeric is found."""
+    if text is None:
+        return None
+    match = re.search(r"[\d,]+(?:\.\d+)?", str(text))
+    if not match:
+        return None
+    try:
+        return float(match.group(0).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def parse_fleet_workbook(wb, source_filename, uploaded_by):
+    """Reads every worksheet in an uploaded workbook and returns a list of
+    fleet_history row dicts. Understands exactly the column layout
+    _build_inspection_workbook() produces (both the single-sheet and the
+    per-type split .xlsx files), so any spreadsheet downloaded from this
+    app's own Download Spreadsheet button can be re-uploaded here."""
+    new_rows = []
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    for ws in wb.worksheets:
+        rows_iter = ws.iter_rows(values_only=True)
+        try:
+            header = next(rows_iter)
+        except StopIteration:
+            continue
+        if not header:
+            continue
+
+        header = [str(h).strip() if h is not None else "" for h in header]
+        col_index = {name: i for i, name in enumerate(header)}
+
+        tyre_cols = {}
+        for i, name in enumerate(header):
+            m = re.match(r"^Tyre (.+) \(mm\)$", name)
+            if m:
+                tyre_cols[m.group(1)] = i
+
+        vtype_idx = col_index.get("Vehicle Type")
+        route_idx = col_index.get("Route Type")
+        plate_idx = col_index.get("Plate Number")
+        odo_idx = col_index.get("Odometer Reading (km)")
+        entered_idx = col_index.get("Entered By")
+        date_idx = col_index.get("Last Edited")
+
+        if plate_idx is None or date_idx is None or vtype_idx is None:
+            continue  # doesn't look like one of our exports — skip this sheet
+
+        for row in rows_iter:
+            if row is None or all(c is None for c in row):
+                continue
+
+            plate_text = str(row[plate_idx]).strip() if plate_idx < len(row) and row[plate_idx] else ""
+            if not plate_text:
+                continue
+
+            vtype_label = str(row[vtype_idx]).strip().lower() if vtype_idx < len(row) and row[vtype_idx] else ""
+            vehicle_type = VEHICLE_LABEL_TO_KEY.get(vtype_label)
+            if not vehicle_type:
+                continue
+
+            snapshot_date = _normalize_snapshot_date(row[date_idx] if date_idx < len(row) else None)
+            if not snapshot_date:
+                continue
+
+            route_type = ""
+            if route_idx is not None and route_idx < len(row) and row[route_idx]:
+                route_type = ROUTE_LABEL_TO_KEY.get(str(row[route_idx]).strip().lower(), "")
+
+            odometer_text = ""
+            if odo_idx is not None and odo_idx < len(row) and row[odo_idx] is not None:
+                odometer_text = str(row[odo_idx]).strip()
+
+            entered_by = ""
+            if entered_idx is not None and entered_idx < len(row) and row[entered_idx]:
+                entered_by = str(row[entered_idx]).strip()
+
+            tyres = {}
+            for code, idx in tyre_cols.items():
+                if idx < len(row) and row[idx] not in (None, ""):
+                    try:
+                        tyres[code] = float(row[idx])
+                    except (TypeError, ValueError):
+                        continue
+
+            new_rows.append({
+                "vehicle_type": vehicle_type,
+                "route_type": route_type,
+                "plate_text": plate_text,
+                "odometer_text": odometer_text,
+                "tyres_json": json.dumps(tyres),
+                "entered_by": entered_by,
+                "snapshot_date": snapshot_date,
+                "uploaded_by": uploaded_by,
+                "uploaded_at": now_str,
+                "source_filename": source_filename,
+            })
+
+    return new_rows
+
+
+def build_fleet_overview_groups():
+    """One row per unique plate per vehicle type, holding that plate's
+    MOST RECENT snapshot — exactly what the three overview tables show."""
+    history = read_fleet_history()
+    latest_by_key = {}
+    for r in history:
+        vtype = r.get("vehicle_type")
+        plate = (r.get("plate_text") or "").strip()
+        if vtype not in VEHICLE_CONFIG or not plate:
+            continue
+        key = (vtype, plate.upper())
+        existing = latest_by_key.get(key)
+        if existing is None or r.get("snapshot_date", "") > existing.get("snapshot_date", ""):
+            latest_by_key[key] = r
+
+    groups = {vtype: [] for vtype in VEHICLE_CONFIG}
+    for (vtype, _), row in latest_by_key.items():
+        groups[vtype].append(row)
+    for vtype in groups:
+        groups[vtype].sort(key=lambda r: r.get("snapshot_date", ""), reverse=True)
+    return groups
+
+
+# Fixed chart dimensions (cm) and the row-height estimate used to reserve
+# enough vertical space after each chart so the next vehicle's block never
+# overlaps it. Excel's default row height is ~0.53cm, so a 7cm-tall chart
+# needs about 13 rows — 16 gives a comfortable buffer across Excel/LibreOffice/
+# Google Sheets, which all render row heights very slightly differently.
+FLEET_CHART_HEIGHT_CM = 7
+FLEET_CHART_WIDTH_CM = 14
+FLEET_CHART_ROW_ESTIMATE = 16
+
+_THIN_BORDER_SIDE = Side(style="thin", color="E7E1D6")
+_TABLE_BORDER = Border(left=_THIN_BORDER_SIDE, right=_THIN_BORDER_SIDE,
+                        top=_THIN_BORDER_SIDE, bottom=_THIN_BORDER_SIDE)
+
+
+def _add_vehicle_block_to_sheet(ws, plate_display, rows_for_plate, start_row):
+    """Writes one vehicle's header, history table, and two native Excel
+    line charts (odometer + tyre tread over time) into ws, starting at
+    start_row. Returns the row the next vehicle's block should start at."""
+    history_rows = sorted(rows_for_plate, key=lambda r: r.get("snapshot_date", ""))
+    latest = history_rows[-1]
+
+    tyre_codes = []
+    seen = set()
+    for r in history_rows:
+        for code in json.loads(r.get("tyres_json") or "{}"):
+            if code not in seen:
+                seen.add(code)
+                tyre_codes.append(code)
+
+    last_col = max(4, 2 + len(tyre_codes))
+    row = start_row
+
+    # --- Plate header band ---
+    plate_cell = ws.cell(row=row, column=1, value=f"Plate: {plate_display}")
+    plate_cell.font = Font(bold=True, size=13, color="FFFFFF")
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=last_col)
+    for c in range(1, last_col + 1):
+        ws.cell(row=row, column=c).fill = PatternFill(start_color="C8102E", end_color="C8102E", fill_type="solid")
+    ws.row_dimensions[row].height = 22
+    row += 1
+
+    # --- Meta line ---
+    route_label = {"feeder": "Feeder", "trunk": "Trunk"}.get(latest.get("route_type"))
+    meta_bits = []
+    if route_label:
+        meta_bits.append(f"Route: {route_label}")
+    meta_bits.append(f"Last Updated: {latest.get('snapshot_date', '')}")
+    meta_bits.append(f"Entered By: {latest.get('entered_by') or '—'}")
+    meta_cell = ws.cell(row=row, column=1, value="   |   ".join(meta_bits))
+    meta_cell.font = Font(italic=True, size=10, color="5B5348")
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=last_col)
+    row += 1
+
+    # --- History table ---
+    table_header_row = row
+    headers = ["Date", "Odometer (km)"] + [f"Tyre {c} (mm)" for c in tyre_codes]
+    for i, h in enumerate(headers, start=1):
+        cell = ws.cell(row=table_header_row, column=i, value=h)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(start_color="14100D", end_color="14100D", fill_type="solid")
+        cell.alignment = Alignment(horizontal="center")
+        cell.border = _TABLE_BORDER
+    row += 1
+
+    data_start_row = row
+    for r in history_rows:
+        tyres = json.loads(r.get("tyres_json") or "{}")
+        values = [r.get("snapshot_date", ""), _extract_numeric(r.get("odometer_text", ""))]
+        for code in tyre_codes:
+            values.append(tyres.get(code))
+        for i, v in enumerate(values, start=1):
+            cell = ws.cell(row=row, column=i, value=v)
+            cell.border = _TABLE_BORDER
+            if i == 2:
+                cell.number_format = "#,##0"
+            elif i > 2:
+                cell.number_format = "0.00"
+        row += 1
+    data_end_row = row - 1
+
+    ws.column_dimensions[get_column_letter(1)].width = 20
+    for i in range(2, last_col + 1):
+        ws.column_dimensions[get_column_letter(i)].width = 16
+
+    # --- Charts (stacked vertically below the table, both anchored at
+    # column A so neither can ever overlap the data table beside it) ---
+    odo_chart_row = data_end_row + 2
+    odo_chart = LineChart()
+    odo_chart.title = f"{plate_display} — Odometer Over Time"
+    odo_chart.y_axis.title = "Odometer (km)"
+    odo_chart.x_axis.title = "Date"
+    odo_chart.height = FLEET_CHART_HEIGHT_CM
+    odo_chart.width = FLEET_CHART_WIDTH_CM
+    odo_chart.style = 2
+    odo_data = Reference(ws, min_col=2, min_row=table_header_row, max_row=data_end_row)
+    odo_cats = Reference(ws, min_col=1, min_row=data_start_row, max_row=data_end_row)
+    odo_chart.add_data(odo_data, titles_from_data=True)
+    odo_chart.set_categories(odo_cats)
+    if odo_chart.series:
+        odo_chart.series[0].graphicalProperties.line.solidFill = "C8102E"
+        odo_chart.series[0].graphicalProperties.line.width = 20000
+    ws.add_chart(odo_chart, f"A{odo_chart_row}")
+
+    tyre_chart_row = odo_chart_row + FLEET_CHART_ROW_ESTIMATE + 1
+    if tyre_codes:
+        tyre_chart = LineChart()
+        tyre_chart.title = f"{plate_display} — Tyre Tread Depth Over Time"
+        tyre_chart.y_axis.title = "mm"
+        tyre_chart.x_axis.title = "Date"
+        tyre_chart.height = FLEET_CHART_HEIGHT_CM
+        tyre_chart.width = FLEET_CHART_WIDTH_CM
+        tyre_chart.style = 10
+        tyre_data = Reference(ws, min_col=3, max_col=2 + len(tyre_codes),
+                               min_row=table_header_row, max_row=data_end_row)
+        tyre_cats = Reference(ws, min_col=1, min_row=data_start_row, max_row=data_end_row)
+        tyre_chart.add_data(tyre_data, titles_from_data=True)
+        tyre_chart.set_categories(tyre_cats)
+        ws.add_chart(tyre_chart, f"A{tyre_chart_row}")
+        content_end_row = tyre_chart_row + FLEET_CHART_ROW_ESTIMATE
+    else:
+        content_end_row = odo_chart_row + FLEET_CHART_ROW_ESTIMATE
+
+    return max(data_end_row, content_end_row) + 3
+
+
+def build_fleet_history_workbook():
+    """One sheet per vehicle type (Car / Bus / Double Decker Bus), each
+    listing every plate of that type with its full snapshot history and
+    two native Excel line charts (odometer + tyre tread over time)."""
+    history = read_fleet_history()
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    for vtype, cfg in VEHICLE_CONFIG.items():
+        ws = wb.create_sheet(title=cfg["label"][:31])
+
+        title_cell = ws.cell(row=1, column=1, value=f"{cfg['label']} — Fleet History")
+        title_cell.font = Font(bold=True, size=16, color="14100D")
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=8)
+        ws.row_dimensions[1].height = 26
+
+        plates = {}
+        for r in history:
+            if r.get("vehicle_type") != vtype:
+                continue
+            key = (r.get("plate_text") or "").strip().upper()
+            if not key:
+                continue
+            plates.setdefault(key, []).append(r)
+
+        if not plates:
+            empty_cell = ws.cell(row=3, column=1, value="No history uploaded yet for this vehicle type.")
+            empty_cell.font = Font(italic=True, color="5B5348")
+            continue
+
+        row_cursor = 3
+        for plate_key in sorted(plates.keys()):
+            rows_for_plate = plates[plate_key]
+            display_plate = sorted(rows_for_plate, key=lambda r: r.get("snapshot_date", ""))[-1].get("plate_text", plate_key)
+            row_cursor = _add_vehicle_block_to_sheet(ws, display_plate, rows_for_plate, row_cursor)
+
+    return wb
+
+
+# ---------------------------------------------------------------------------
+# Concurrency
+# ---------------------------------------------------------------------------
+# Vehicle, user and fleet-history writes are single-row Postgres statements,
+# so they no longer need an application-level lock: the "Convert All
+# Plates" batch job (below) updates only the one column it fills in, and
+# can't clobber a staff member's concurrent edit to the same row.
+#
+# ocr_inference_lock serializes every call into license_plate.py's shared,
+# already-loaded OCR model — one prediction at a time, whether it was
+# triggered by the single "Ask AI" button or the batch job. PaddleOCR's
+# pipeline object isn't documented as safe for concurrent predict() calls,
+# so this is a deliberate correctness choice, not just a performance knob:
+# see the "Convert All Plates" section in README.md for the full reasoning.
+ocr_inference_lock = threading.Lock()
+
+# In-memory batch-job tracking for "Convert All Plates". This only works
+# within a single running process — see the README note on deployment.
+ocr_jobs = {}
+ocr_jobs_lock = threading.Lock()
+
+
+def _parse_last_edited(value):
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return None
+
+
+def filter_by_date(rows, date_filter, start=None, end=None):
+    """date_filter: 'all' | 'today' | 'week' | 'range'.
+    'range' uses the start/end YYYY-MM-DD strings (inclusive, by calendar day)."""
+    if date_filter == "range":
+        if not start or not end:
+            return rows
+        try:
+            start_dt = datetime.strptime(start, "%Y-%m-%d")
+            end_dt = datetime.strptime(end, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        except ValueError:
+            return rows
+        if end_dt < start_dt:
+            start_dt, end_dt = end_dt, start_dt.replace(hour=23, minute=59, second=59)
+        result = []
+        for r in rows:
+            dt = _parse_last_edited(r.get("last_edited", ""))
+            if dt and start_dt <= dt <= end_dt:
+                result.append(r)
+        return result
+
+    if date_filter not in ("today", "week"):
+        return rows
+
+    now = datetime.now()
+    if date_filter == "today":
+        today_str = now.strftime("%Y-%m-%d")
+        return [r for r in rows if r.get("last_edited", "").startswith(today_str)]
+
+    # date_filter == "week": from this week's Monday 00:00 up to now
+    week_start = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    result = []
+    for r in rows:
+        dt = _parse_last_edited(r.get("last_edited", ""))
+        if dt and dt >= week_start:
+            result.append(r)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Auth helpers
+# ---------------------------------------------------------------------------
+def login_required(role=None):
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            if "username" not in session:
+                return redirect(url_for("login"))
+            if role and session.get("role") != role:
+                return redirect(url_for("login"))
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+# ---------------------------------------------------------------------------
+# Routes: Auth
+# ---------------------------------------------------------------------------
+@app.route("/", methods=["GET"])
+def index():
+    if "username" not in session:
+        return redirect(url_for("login"))
+    if session["role"] == "technician":
+        return redirect(url_for("technician_home"))
+    return redirect(url_for("staff_home"))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        user = db.get_user(username)
+        if user and user["password"] == password:
+            session["username"] = username
+            session["role"] = user["role"]
+            session["display_name"] = user["name"]
+            if user["role"] == "technician":
+                return redirect(url_for("technician_home"))
+            return redirect(url_for("staff_home"))
+        error = "Incorrect User ID or password. Please try again."
+        return render_template("login.html", error=error)
+    return render_template("login.html", error=None)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+# ---------------------------------------------------------------------------
+# Routes: Technician
+# ---------------------------------------------------------------------------
+@app.route("/technician")
+@login_required(role="technician")
+def technician_home():
+    rows = read_all()
+    rows = filter_by_date(rows, "today")
+    my_username = session.get("username")
+    rows = [r for r in rows if r.get("added_by_username") == my_username]
+    rows.sort(key=lambda r: r.get("last_edited", ""), reverse=True)
+    return render_template(
+        "technician.html",
+        vehicles=rows,
+        vehicle_config=VEHICLE_CONFIG,
+        display_name=session.get("display_name"),
+        devices=ESP_DEVICES,
+        device_labels=ESP_DEVICE_LABELS,
+        selected_device=session.get("device") or "",
+    )
+
+
+@app.route("/technician/device", methods=["POST"])
+@login_required(role="technician")
+def technician_set_device():
+    """Remember which ESP32 this technician is using (chosen once on the home page)."""
+    data = request.get_json(silent=True) or {}
+    device = str(data.get("device", "")).strip().upper()
+    if device and device not in ESP_DEVICE_IDS:
+        return jsonify({"error": "Unknown device."}), 400
+    if device:
+        session["device"] = device
+    else:
+        session.pop("device", None)
+    with esp_lock:
+        slot = esp_slots.get(session["username"])
+        if slot:
+            if device:
+                slot["device"] = device     # change takes effect for a box that is already listening
+            else:
+                del esp_slots[session["username"]]
+    return jsonify({"success": True, "device": device, "label": ESP_DEVICE_LABELS.get(device, "")})
+
+
+@app.route("/technician/config")
+@login_required(role="technician")
+def technician_config():
+    return jsonify(VEHICLE_CONFIG)
+
+
+def _clean_tyre_readings(raw, tyres, vehicle_type):
+    """Validate the ESP32 readings a technician's page sends back on save.
+
+    Keeps a tyre's readings ONLY when they are a list of exactly six finite
+    numbers (5 readings + average), the tyre code belongs to this vehicle
+    type, and the 6th value matches the average that is saved in `tyres`
+    (so a stale/edited field can never carry mismatched ESP data).
+    """
+    valid_codes = {
+        t["code"]
+        for row in VEHICLE_CONFIG[vehicle_type]["rows"]
+        for t in row["left"] + row["right"]
+    }
+    out = {}
+    if not isinstance(raw, dict):
+        return out
+    for code, vals in raw.items():
+        if code not in valid_codes or not isinstance(vals, (list, tuple)) or len(vals) != 6:
+            continue
+        try:
+            nums = [float(v) for v in vals]
+        except (TypeError, ValueError):
+            continue
+        if any(n != n or n in (float("inf"), float("-inf")) for n in nums):
+            continue
+        try:
+            saved = float(tyres.get(code))
+        except (TypeError, ValueError):
+            continue
+        if abs(saved - nums[5]) > 0.006:
+            continue  # field was changed by hand after the ESP reading
+        out[code] = nums
+    return out
+
+
+@app.route("/technician/save", methods=["POST"])
+@login_required(role="technician")
+def technician_save():
+    data = request.get_json(force=True)
+    vehicle_type = data.get("vehicle_type")
+    if vehicle_type not in VEHICLE_CONFIG:
+        return jsonify({"error": "Invalid vehicle type"}), 400
+
+    tyres = data.get("tyres", {})
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    my_username = session.get("username")
+
+    has_route_type = VEHICLE_CONFIG[vehicle_type].get("has_route_type", False)
+    route_type = data.get("route_type", "feeder")
+    if not has_route_type or route_type not in ("feeder", "trunk"):
+        route_type = "" if not has_route_type else "feeder"
+
+    vid = data.get("id")
+
+    row = {
+        "id": vid if vid else str(uuid.uuid4()),
+        "vehicle_type": vehicle_type,
+        "plate_image_key": "",
+        "plate_text": data.get("plate_text", ""),
+        "odometer_image_key": "",
+        "odometer_text": data.get("odometer_text", ""),
+        "tyres_json": json.dumps(tyres),
+        "tyre_readings_json": json.dumps(
+            _clean_tyre_readings(data.get("tyre_readings"), tyres, vehicle_type)
+        ),
+        "route_type": route_type,
+        "added_by": session.get("display_name", my_username),
+        "added_by_username": my_username,
+        "last_edited": now,
+    }
+
+    existing = None
+    if vid:
+        existing = db.get_vehicle(vid)
+        if existing is None:
+            return jsonify({"error": "Record not found"}), 404
+        # A technician may only edit inspections they logged themselves.
+        if existing.get("added_by_username") != my_username:
+            return jsonify({"error": "You can only edit inspections you added yourself."}), 403
+        # preserve staff-entered text if technician edit didn't touch images
+        if not data.get("plate_text_touched"):
+            row["plate_text"] = existing.get("plate_text", "")
+        if not data.get("odometer_text_touched"):
+            row["odometer_text"] = existing.get("odometer_text", "")
+        # keep the name of the technician who originally logged this vehicle
+        row["added_by"] = existing.get("added_by") or row["added_by"]
+        row["added_by_username"] = existing.get("added_by_username") or row["added_by_username"]
+
+    # A freshly taken photo arrives as a base64 data URL and goes to the
+    # bucket. Anything else (empty, or the /vehicle_image URL the edit form
+    # was loaded with) means "keep the photo that's already stored".
+    replaced_keys = []
+    for kind in IMAGE_KINDS:
+        incoming = data.get(f"{kind}_image") or ""
+        old_key = (existing or {}).get(f"{kind}_image_key", "")
+        if db.is_data_url(incoming):
+            try:
+                row[f"{kind}_image_key"] = db.put_image(row["id"], kind, incoming)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            if old_key:
+                replaced_keys.append(old_key)
+        else:
+            row[f"{kind}_image_key"] = old_key
+
+    db.upsert_vehicle(row)
+    db.delete_images(replaced_keys)
+    return jsonify({"success": True, "id": row["id"]})
+
+
+@app.route("/vehicle_image/<vid>/<kind>")
+def vehicle_image(vid, kind):
+    """Streams a plate/odometer photo from the private bucket. Staff can
+    see every photo; a technician only the ones on their own inspections."""
+    if "username" not in session:
+        return jsonify({"error": "Not signed in."}), 401
+    if kind not in IMAGE_KINDS:
+        return jsonify({"error": "Not found"}), 404
+    row = db.get_vehicle(vid)
+    if not row or not row.get(f"{kind}_image_key"):
+        return jsonify({"error": "Not found"}), 404
+    if session.get("role") != "staff" and row.get("added_by_username") != session.get("username"):
+        return jsonify({"error": "Not allowed."}), 403
+    body, content_type = db.get_image(row[f"{kind}_image_key"])
+    # The URL carries the object key (?v=...), so it's safe to cache.
+    return send_file(BytesIO(body), mimetype=content_type, max_age=86400)
+
+
+@app.route("/technician/vehicle/<vid>")
+@login_required(role="technician")
+def technician_get_vehicle(vid):
+    row = get_vehicle(vid)
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    if row.get("added_by_username") != session.get("username"):
+        return jsonify({"error": "You can only view inspections you added yourself."}), 403
+    row = dict(row)
+    row["tyres"] = json.loads(row.get("tyres_json") or "{}")
+    row["tyre_readings"] = json.loads(row.get("tyre_readings_json") or "{}")
+    return jsonify(row)
+
+
+@app.route("/technician/delete/<vid>", methods=["POST"])
+@login_required(role="technician")
+def technician_delete(vid):
+    existing = db.get_vehicle(vid)
+    if not existing:
+        return jsonify({"error": "Not found"}), 404
+    if existing.get("added_by_username") != session.get("username"):
+        return jsonify({"error": "You can only delete inspections you added yourself."}), 403
+    if db.delete_vehicles([vid]) == 0:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"success": True})
+
+
+# ---------------------------------------------------------------------------
+# ESP32 tyre-gauge integration
+# ---------------------------------------------------------------------------
+# Flow:
+#   1. A technician taps a tyre field  ->  the page calls /technician/esp/arm
+#      and starts polling /technician/esp/poll ("listening" state).
+#   2. The ESP32 POSTs "r1;r2;r3;r4;r5;avg" to /api/esp/measurement.
+#   3. The server hands that message to the technician whose field was armed
+#      most recently; the page shows only the average (6th value) but sends
+#      all six back on save (stored in tyre_readings_json).
+#   4. The box KEEPS listening (even after it received a value) until the
+#      technician types, taps another tyre, taps away from a box that already
+#      holds an ESP32 value, or closes the wizard. A newer message replaces
+#      the older one.
+#
+# State is held in memory (one process). If you run several worker
+# processes, keep ESP traffic on one worker or move this to Redis/DB.
+ESP_API_KEY = os.environ.get("ESP_API_KEY", "local-test-key")
+# A tapped box keeps listening for as long as the technician's page keeps
+# polling (once a second). If the page goes away (tab closed, phone asleep)
+# the slot is dropped after this many seconds without a poll.
+ESP_IDLE_TIMEOUT_SECONDS = 120
+ESP_MAX_TREAD_MM = 30.0            # same ceiling as the number input
+
+# The physical gauges. A technician picks one on the home page; each ESP32
+# sends its own DEVICE_ID with every measurement ("device_id" in the JSON).
+ESP_DEVICES = [
+    {"id": "ESP_001", "label": "Device 1"},
+    {"id": "ESP_002", "label": "Device 2"},
+    {"id": "ESP_003", "label": "Device 3"},
+]
+ESP_DEVICE_IDS = {d["id"] for d in ESP_DEVICES}
+ESP_DEVICE_LABELS = {d["id"]: d["label"] for d in ESP_DEVICES}
+
+esp_lock = threading.Lock()
+esp_slots = {}   # username -> {token, tyre, device, armed_at, last_seen, result, seq, received_at}
+
+
+def _esp_prune(now=None):
+    now = now or datetime.now().timestamp()
+    for user in list(esp_slots):
+        slot = esp_slots[user]
+        if now - slot["last_seen"] > ESP_IDLE_TIMEOUT_SECONDS:
+            del esp_slots[user]
+
+
+def _esp_extract_message():
+    """Pull the semicolon string out of whatever the board sent: raw text,
+    a JSON string, a JSON object ({"data": "..."}), or form data."""
+    payload = request.get_json(silent=True)
+    if isinstance(payload, str):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("value", "data", "message", "values", "measurement", "payload", "readings"):
+            if isinstance(payload.get(key), str):
+                return payload[key]
+            if isinstance(payload.get(key), list):
+                return ";".join(str(v) for v in payload[key])
+        # Any other field name: use the first string that looks like r1;...;avg
+        for v in payload.values():
+            if isinstance(v, str) and ";" in v:
+                return v
+        return None
+    if request.form:
+        for key in ("value", "data", "message", "values", "measurement", "payload"):
+            if request.form.get(key):
+                return request.form.get(key)
+        for v in request.form.values():
+            if ";" in v:
+                return v
+    raw = request.get_data(as_text=True)
+    return raw
+
+
+def parse_esp_message(text):
+    """'1.1;1.2;1.3;1.2;1.1;1.18' -> six floats, or raises ValueError."""
+    if text is None:
+        raise ValueError("Empty message.")
+    cleaned = text.strip().strip('"\'').strip().rstrip(";").strip()
+    parts = [p.strip() for p in cleaned.split(";")]
+    if len(parts) != 6:
+        raise ValueError(f"Expected 6 values separated by ';' but got {len(parts)}.")
+    values = []
+    for p in parts:
+        try:
+            v = float(p)
+        except ValueError:
+            raise ValueError(f"'{p}' is not a number.")
+        if v != v or v in (float("inf"), float("-inf")) or v < 0 or v > ESP_MAX_TREAD_MM:
+            raise ValueError(f"{p} is outside the allowed 0-{ESP_MAX_TREAD_MM:g} mm range.")
+        values.append(v)
+    return values
+
+
+def _esp_device_id():
+    """Which gauge sent this message? JSON field, form field, header or query string."""
+    dev = None
+    body = request.get_json(silent=True)
+    if isinstance(body, dict):
+        dev = body.get("device_id") or body.get("device")
+    if not dev and request.form:
+        dev = request.form.get("device_id") or request.form.get("device")
+    dev = dev or request.headers.get("X-Device-ID") or request.args.get("device_id")
+    return str(dev).strip().upper() if dev else None
+
+
+def _esp_key_ok():
+    supplied = (
+        request.headers.get("X-API-Key")
+        or request.headers.get("X-Api-Key")
+        or request.args.get("api_key")
+    )
+    auth = request.headers.get("Authorization", "")
+    if not supplied and auth.lower().startswith("bearer "):
+        supplied = auth[7:].strip()
+    if not supplied:
+        body = request.get_json(silent=True)
+        if isinstance(body, dict):
+            supplied = body.get("api_key") or body.get("key")
+    return bool(supplied) and supplied == ESP_API_KEY
+
+
+@app.route("/api/esp/measurement", methods=["POST"])
+def esp_measurement():
+    if not _esp_key_ok():
+        return jsonify({"error": "Invalid or missing API key."}), 401
+    try:
+        values = parse_esp_message(_esp_extract_message())
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    device = _esp_device_id()
+    if device and device not in ESP_DEVICE_IDS:
+        return jsonify({"error": f"Unknown device_id '{device}'."}), 400
+
+    now = datetime.now().timestamp()
+    with esp_lock:
+        _esp_prune(now)
+        # Every armed box is still listening, even ones that already hold a
+        # value - a new message simply replaces it (seq goes up by one).
+        # Only technicians who selected THIS device receive its messages.
+        # (A sender that includes no device_id at all is treated as "any device".)
+        if device:
+            waiting = [(u, s) for u, s in esp_slots.items() if s.get("device") == device]
+        else:
+            waiting = list(esp_slots.items())
+        if not waiting:
+            who = ESP_DEVICE_LABELS.get(device, "any device")
+            return jsonify({
+                "error": f"No technician is listening for {who}. "
+                         "Select it on the home page, tap a tyre field in the app, then send again."
+            }), 409
+        # Most recently tapped field wins.
+        user, slot = max(waiting, key=lambda us: us[1]["armed_at"])
+        slot["result"] = values
+        slot["seq"] += 1
+        slot["received_at"] = now
+        tyre = slot["tyre"]
+    return jsonify({"success": True, "tyre": tyre, "average": values[5], "device": device})
+
+
+@app.route("/technician/esp/arm", methods=["POST"])
+@login_required(role="technician")
+def technician_esp_arm():
+    data = request.get_json(silent=True) or {}
+    tyre = str(data.get("tyre", ""))[:8]
+    if not re.fullmatch(r"[A-Za-z0-9]+", tyre or ""):
+        return jsonify({"error": "Invalid tyre."}), 400
+    device = session.get("device")
+    if device not in ESP_DEVICE_IDS:
+        return jsonify({"error": "Select your device on the home page first.", "code": "no_device"}), 409
+    token = str(uuid.uuid4())
+    now = datetime.now().timestamp()
+    with esp_lock:
+        _esp_prune(now)
+        esp_slots[session["username"]] = {
+            "token": token, "tyre": tyre, "device": device, "armed_at": now, "last_seen": now,
+            "result": None, "seq": 0, "received_at": None,
+        }
+    return jsonify({"token": token, "timeout": ESP_IDLE_TIMEOUT_SECONDS,
+                    "device": device, "label": ESP_DEVICE_LABELS[device]})
+
+
+@app.route("/technician/esp/poll")
+@login_required(role="technician")
+def technician_esp_poll():
+    token = request.args.get("token", "")
+    try:
+        after = int(request.args.get("after", "0"))
+    except ValueError:
+        after = 0
+    now = datetime.now().timestamp()
+    with esp_lock:
+        _esp_prune(now)
+        slot = esp_slots.get(session["username"])
+        if not slot or slot["token"] != token:
+            return jsonify({"status": "expired"})
+        slot["last_seen"] = now          # page is alive: keep listening
+        if slot["seq"] > after:
+            return jsonify({"status": "received", "tyre": slot["tyre"],
+                            "values": slot["result"], "seq": slot["seq"]})
+        return jsonify({"status": "waiting"})
+
+
+@app.route("/technician/esp/disarm", methods=["POST"])
+@login_required(role="technician")
+def technician_esp_disarm():
+    data = request.get_json(silent=True) or {}
+    with esp_lock:
+        slot = esp_slots.get(session["username"])
+        if slot and slot["token"] == data.get("token"):
+            del esp_slots[session["username"]]
+    return jsonify({"success": True})
+
+
+# ---------------------------------------------------------------------------
+# Routes: SMRT Staff
+# ---------------------------------------------------------------------------
+@app.route("/staff")
+@login_required(role="staff")
+def staff_home():
+    date_filter = request.args.get("date_filter", "all")
+    range_start = request.args.get("start", "")
+    range_end = request.args.get("end", "")
+    all_rows = read_all()
+
+    date_filtered_rows = filter_by_date(all_rows, date_filter, range_start, range_end)
+
+    counts = {"all": len(date_filtered_rows)}
+    for key in VEHICLE_CONFIG:
+        counts[key] = len([r for r in date_filtered_rows if r["vehicle_type"] == key])
+    counts["feeder"] = len([r for r in date_filtered_rows if r.get("route_type") == "feeder"])
+    counts["trunk"] = len([r for r in date_filtered_rows if r.get("route_type") == "trunk"])
+
+    # Type/route filtering and sorting now happen client-side (JS) so the
+    # person can combine multiple filters instantly without a page reload.
+    # The server hands over everything in the current date range, pre-sorted
+    # newest-first as a sensible default.
+    rows = date_filtered_rows
+    rows.sort(key=lambda r: r.get("last_edited", ""), reverse=True)
+
+    for r in rows:
+        r["tyres"] = json.loads(r.get("tyres_json") or "{}")
+        # ESP32-measured tyres carry [r1..r5, avg]; manual ones are absent.
+        r["tyre_readings"] = json.loads(r.get("tyre_readings_json") or "{}")
+
+    return render_template(
+        "staff.html",
+        vehicles=rows,
+        vehicle_config=VEHICLE_CONFIG,
+        date_filter=date_filter,
+        range_start=range_start,
+        range_end=range_end,
+        counts=counts,
+        total_all_time=len(all_rows),
+        display_name=session.get("display_name"),
+        active_tab="dashboard",
+    )
+
+
+@app.route("/staff/update_text/<vid>", methods=["POST"])
+@login_required(role="staff")
+def staff_update_text(vid):
+    data = request.get_json(force=True)
+    row = db.get_vehicle(vid)
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    changes = {}
+    if "plate_text" in data:
+        changes["plate_text"] = data["plate_text"]
+    if "odometer_text" in data:
+        changes["odometer_text"] = data["odometer_text"]
+    if "route_type" in data:
+        has_route_type = VEHICLE_CONFIG.get(row["vehicle_type"], {}).get("has_route_type", False)
+        if not has_route_type:
+            return jsonify({"error": "This vehicle type doesn't have a route type."}), 400
+        if data["route_type"] not in ("feeder", "trunk"):
+            return jsonify({"error": "Route type must be 'feeder' or 'trunk'."}), 400
+        changes["route_type"] = data["route_type"]
+    if not db.update_vehicle_fields(vid, changes):
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"success": True})
+
+
+OCR_TASKS = {
+    "plate": {
+        "module_name": "license_plate",
+        "predict_func_name": "predict_license_plate",
+        "image_field": "plate_image_key",
+        "text_field": "plate_text",
+        "label": "plate number",
+        "photo_label": "plate photo",
+    },
+    "odometer": {
+        "module_name": "odometer",
+        "predict_func_name": "predict_odometer_reading",
+        "image_field": "odometer_image_key",
+        "text_field": "odometer_text",
+        "label": "odometer reading",
+        "photo_label": "odometer photo",
+    },
+}
+
+
+def _load_ocr_module(task):
+    """
+    Import license_plate.py or odometer.py on demand (never at server
+    startup) so their heavy, optional OCR dependencies don't affect the
+    rest of the app. Returns (module, None) on success, or
+    (None, error_message) if the optional packages aren't installed.
+
+    Both modules are kept as fully separate files from app.py — this just
+    imports whichever one the current task needs, the first time it's
+    actually used.
+    """
+    module_name = OCR_TASKS[task]["module_name"]
+    try:
+        if module_name == "license_plate":
+            import license_plate
+            return license_plate, None
+        else:
+            import odometer
+            return odometer, None
+    except ImportError:
+        return None, (
+            "The AI reading feature isn't installed on this server. "
+            "Run: pip install -r requirements-ocr.txt"
+        )
+
+
+def _run_ocr_predict(task, ocr_module, image_b64):
+    """
+    Every OCR prediction — plate or odometer, whether from an individual
+    "Ask AI" button or a "Convert All" batch job — goes through this one
+    choke point, serialized by ocr_inference_lock. Neither module's
+    PaddleOCR pipeline is documented as safe for concurrent predict()
+    calls (and both set the same CPU-thread env vars, so they'd just
+    contend with each other for the same cores anyway), so only one
+    prediction of *either* kind ever runs at a time across the whole
+    server process.
+    """
+    predict_func = getattr(ocr_module, OCR_TASKS[task]["predict_func_name"])
+    with ocr_inference_lock:
+        return predict_func(image_b64)
+
+
+@app.route("/staff/ocr_plate/<vid>", methods=["POST"])
+@login_required(role="staff")
+def staff_ocr_plate(vid):
+    """Ask license_plate.py to read the plate photo already saved for this vehicle."""
+    return _ocr_single(vid, "plate")
+
+
+@app.route("/staff/ocr_odometer/<vid>", methods=["POST"])
+@login_required(role="staff")
+def staff_ocr_odometer(vid):
+    """Ask odometer.py to read the odometer photo already saved for this vehicle."""
+    return _ocr_single(vid, "odometer")
+
+
+def _ocr_single(vid, task):
+    cfg = OCR_TASKS[task]
+    row = db.get_vehicle(vid)
+    if not row:
+        return jsonify({"error": "Vehicle not found"}), 404
+
+    image_key = row.get(cfg["image_field"], "")
+    if not image_key:
+        return jsonify({"error": f"There's no {cfg['photo_label']} saved for this vehicle."}), 400
+
+    ocr_module, err = _load_ocr_module(task)
+    if err:
+        return jsonify({"error": err}), 503
+
+    try:
+        result_text = _run_ocr_predict(task, ocr_module, db.get_image_data_url(image_key))
+    except Exception as exc:
+        return jsonify({"error": f"AI couldn't read this {cfg['photo_label']}: {exc}"}), 500
+
+    if not result_text:
+        return jsonify({"error": f"AI couldn't make out a reading on this {cfg['photo_label']}."}), 422
+
+    result_key = "plate" if task == "plate" else "reading"
+    return jsonify({result_key: result_text})
+
+
+def _run_ocr_batch_job(job_id, vehicle_ids, task):
+    """
+    Runs on a single background thread, one vehicle at a time — see the
+    README section on "Convert All Plates" for why this is deliberately
+    sequential rather than parallelized with threads or processes. The
+    same reasoning and the same locks now also cover odometer readings.
+    """
+    cfg = OCR_TASKS[task]
+    ocr_module, err = _load_ocr_module(task)
+    if err:
+        with ocr_jobs_lock:
+            job = ocr_jobs.get(job_id)
+            if job is not None:
+                job["fatal_error"] = err
+                job["done"] = True
+        return
+
+    for vid in vehicle_ids:
+        entry = {"id": vid}
+        image_key = None
+
+        row = db.get_vehicle(vid)
+        if not row:
+            entry["error"] = "This vehicle no longer exists."
+        elif not row.get(cfg["image_field"]):
+            entry["error"] = f"No {cfg['photo_label']} saved."
+        else:
+            image_key = row[cfg["image_field"]]
+
+        # OCR is only ever serialized against other OCR calls, via
+        # ocr_inference_lock inside _run_ocr_predict(), so normal staff
+        # edits elsewhere in the app aren't blocked while it runs.
+        if image_key is not None:
+            try:
+                result_text = _run_ocr_predict(task, ocr_module, db.get_image_data_url(image_key))
+            except Exception as exc:
+                entry["error"] = str(exc)
+            else:
+                if not result_text:
+                    entry["error"] = f"AI couldn't make out a reading on this {cfg['photo_label']}."
+                elif not db.update_vehicle_fields(vid, {cfg["text_field"]: result_text}):
+                    entry["error"] = "This vehicle was deleted before the result could be saved."
+                else:
+                    entry["value"] = result_text
+
+        with ocr_jobs_lock:
+            job = ocr_jobs.get(job_id)
+            if job is None:
+                return  # job entry was pruned/cancelled; stop quietly
+            job["results"].append(entry)
+            job["processed"] += 1
+
+    with ocr_jobs_lock:
+        job = ocr_jobs.get(job_id)
+        if job is not None:
+            job["done"] = True
+
+
+def compute_ocr_eligible_ids(rows, vehicle_ids, task="plate"):
+    """
+    Vehicles worth sending to OCR: they exist, have the relevant saved
+    photo, and don't already have that field typed in (so a bulk run
+    never overwrites a staff member's manual correction).
+    """
+    cfg = OCR_TASKS[task]
+    eligible = []
+    for vid in vehicle_ids:
+        row = find_row(rows, vid)
+        if not row or not row.get(cfg["image_field"]):
+            continue
+        if row.get(cfg["text_field"], "").strip():
+            continue
+        eligible.append(vid)
+    return eligible
+
+
+@app.route("/staff/ocr_all/start", methods=["POST"])
+@login_required(role="staff")
+def staff_ocr_all_start():
+    """
+    Kicks off "Convert All Plates" (or "Convert All Odometers") as a
+    background job and returns immediately with a job_id the browser
+    polls for progress. Vehicles that already have that field typed in,
+    or have no relevant photo at all, are skipped automatically so a bulk
+    run never overwrites a staff member's manual correction.
+    """
+    data = request.get_json(force=True)
+    vehicle_ids = data.get("vehicle_ids", [])
+    task = data.get("task", "plate")
+    if task not in OCR_TASKS:
+        return jsonify({"error": "Unknown conversion type."}), 400
+    if not isinstance(vehicle_ids, list) or not vehicle_ids:
+        return jsonify({"error": "No vehicles to process."}), 400
+
+    cfg = OCR_TASKS[task]
+    rows = read_all()
+    eligible = compute_ocr_eligible_ids(rows, vehicle_ids, task)
+    if not eligible:
+        return jsonify({
+            "error": f"Nothing to convert — every selected vehicle already has a "
+                     f"{cfg['label']} entered, or has no {cfg['photo_label']} saved."
+        }), 400
+
+    ocr_module, err = _load_ocr_module(task)
+    if err:
+        return jsonify({"error": err}), 503
+
+    job_id = str(uuid.uuid4())
+    with ocr_jobs_lock:
+        # Opportunistic cleanup: keep at most the 5 most recent finished
+        # jobs around so this dict doesn't grow forever on a long-lived
+        # server process.
+        finished = [jid for jid, j in ocr_jobs.items() if j["done"]]
+        for jid in finished[:-5]:
+            ocr_jobs.pop(jid, None)
+
+        ocr_jobs[job_id] = {
+            "total": len(eligible),
+            "processed": 0,
+            "done": False,
+            "fatal_error": None,
+            "results": [],
+        }
+
+    thread = threading.Thread(target=_run_ocr_batch_job, args=(job_id, eligible, task), daemon=True)
+    thread.start()
+
+    return jsonify({"job_id": job_id, "total": len(eligible)})
+
+
+@app.route("/staff/ocr_all/status/<job_id>")
+@login_required(role="staff")
+def staff_ocr_all_status(job_id):
+    with ocr_jobs_lock:
+        job = ocr_jobs.get(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+        return jsonify({
+            "total": job["total"],
+            "processed": job["processed"],
+            "done": job["done"],
+            "fatal_error": job["fatal_error"],
+            "results": list(job["results"]),
+        })
+
+
+def _rows_missing_text(rows):
+    """IDs of rows missing plate or odometer text — the shared download guard."""
+    return [r["id"] for r in rows if not r.get("plate_text", "").strip()
+            or not r.get("odometer_text", "").strip()]
+
+
+def _sort_rows(rows, sort_param):
+    if sort_param == "plate":
+        rows.sort(key=lambda r: (r.get("plate_text", "") or "").lower())
+    elif sort_param == "plate_desc":
+        rows.sort(key=lambda r: (r.get("plate_text", "") or "").lower(), reverse=True)
+    elif sort_param == "last_edited_oldest":
+        rows.sort(key=lambda r: r.get("last_edited", ""))
+    else:
+        rows.sort(key=lambda r: r.get("last_edited", ""), reverse=True)
+    return rows
+
+
+def _build_inspection_workbook(rows, sheet_title="Vehicle Inspections"):
+    """Builds one styled .xlsx Workbook from a list of vehicle rows."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_title
+
+    header_fill = PatternFill(start_color="C8102E", end_color="C8102E", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+
+    tyre_labels = []
+    seen = set()
+    for r in rows:
+        tyres = json.loads(r.get("tyres_json") or "{}")
+        for k in tyres:
+            if k not in seen:
+                seen.add(k)
+                tyre_labels.append(k)
+
+    headers = ["Vehicle Type", "Route Type", "Plate Number", "Odometer Reading (km)"] + \
+        [f"Tyre {t} (mm)" for t in tyre_labels] + ["Entered By", "Last Edited"]
+
+    ws.append(headers)
+    for col in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center")
+
+    for r in rows:
+        tyres = json.loads(r.get("tyres_json") or "{}")
+        route_label = {"feeder": "Feeder", "trunk": "Trunk"}.get(r.get("route_type"), "—")
+        row_data = [
+            VEHICLE_CONFIG.get(r["vehicle_type"], {}).get("label", r["vehicle_type"]),
+            route_label,
+            r.get("plate_text", ""),
+            r.get("odometer_text", ""),
+        ]
+        for t in tyre_labels:
+            row_data.append(tyres.get(t, ""))
+        row_data.append(r.get("added_by", ""))
+        row_data.append(r.get("last_edited", ""))
+        ws.append(row_data)
+
+    for col_idx, header in enumerate(headers, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = max(18, len(header) + 4)
+
+    return wb
+
+
+def apply_staff_filters(rows, date_filter, start, end, selected_types, selected_routes):
+    """The same date -> route -> type filtering pipeline the dashboard,
+    download, and Clear All Data all share, so 'what's currently shown'
+    means the same thing everywhere."""
+    rows = filter_by_date(rows, date_filter, start, end)
+    if selected_routes:
+        rows = [r for r in rows if r.get("route_type") in selected_routes]
+    if selected_types:
+        rows = [r for r in rows if r["vehicle_type"] in selected_types]
+    return rows
+
+
+@app.route("/staff/download")
+@login_required(role="staff")
+def staff_download():
+    date_filter = request.args.get("date_filter", "all")
+    range_start = request.args.get("start", "")
+    range_end = request.args.get("end", "")
+    types_param = request.args.get("types", "").strip()
+    routes_param = request.args.get("routes", "").strip()
+    sort_param = request.args.get("sort", "last_edited")
+    split = request.args.get("split", "") == "1"
+
+    selected_types = set(t for t in types_param.split(",") if t)
+    selected_routes = set(r for r in routes_param.split(",") if r)
+
+    rows = read_all()
+    rows = filter_by_date(rows, date_filter, range_start, range_end)
+    if selected_routes:
+        rows = [r for r in rows if r.get("route_type") in selected_routes]
+
+    # --- Split mode: no vehicle-type filter is active, so hand back one
+    # workbook per vehicle type (car / bus / double decker) instead of one
+    # mixed file, bundled together in a single .zip download. ---
+    if split and not selected_types:
+        missing = _rows_missing_text(rows)
+        if missing:
+            return jsonify({
+                "error": "Some vehicles are missing plate number or odometer reading text. "
+                         "Please fill in every text field before downloading."
+            }), 400
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_buf = BytesIO()
+        included_any = False
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for vtype, cfg in VEHICLE_CONFIG.items():
+                type_rows = _sort_rows(
+                    [r for r in rows if r["vehicle_type"] == vtype], sort_param
+                )
+                if not type_rows:
+                    continue
+                wb = _build_inspection_workbook(type_rows, sheet_title=cfg["label"])
+                xlsx_buf = BytesIO()
+                wb.save(xlsx_buf)
+                # Timestamped so extracting several downloads into the same
+                # folder never silently overwrites an earlier car.xlsx/
+                # bus.xlsx/doubledecker.xlsx with a newer one.
+                zf.writestr(f"{vtype}_{timestamp}.xlsx", xlsx_buf.getvalue())
+                included_any = True
+
+        if not included_any:
+            return jsonify({"error": "No vehicles to export for the current date range."}), 400
+
+        zip_buf.seek(0)
+        filename = f"vehicle_inspections_split_{date_filter}_{timestamp}.zip"
+        return send_file(
+            zip_buf,
+            as_attachment=True,
+            download_name=filename,
+            mimetype="application/zip",
+        )
+
+    # --- Normal mode: one combined workbook for whatever's selected. ---
+    if selected_types:
+        rows = [r for r in rows if r["vehicle_type"] in selected_types]
+    rows = _sort_rows(rows, sort_param)
+
+    missing = _rows_missing_text(rows)
+    if missing:
+        return jsonify({
+            "error": "Some vehicles are missing plate number or odometer reading text. "
+                     "Please fill in every text field before downloading."
+        }), 400
+
+    wb = _build_inspection_workbook(rows)
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    type_tag = "-".join(sorted(selected_types)) if selected_types else "all"
+    route_tag = "-".join(sorted(selected_routes)) if selected_routes else "all"
+    filename = f"vehicle_inspections_{type_tag}_{route_tag}_{date_filter}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@app.route("/staff/clear_all", methods=["POST"])
+@login_required(role="staff")
+def staff_clear_all():
+    """Clears whatever is currently shown on the dashboard — i.e. whatever
+    matches the active date/route/type filters — not necessarily every
+    vehicle in the database."""
+    data = request.get_json(force=True)
+    password = data.get("password", "")
+    date_filter = data.get("date_filter", "all")
+    range_start = data.get("start", "")
+    range_end = data.get("end", "")
+    types_param = (data.get("types") or "").strip()
+    routes_param = (data.get("routes") or "").strip()
+
+    selected_types = set(t for t in types_param.split(",") if t)
+    selected_routes = set(r for r in routes_param.split(",") if r)
+
+    if not check_password(session.get("username"), password):
+        return jsonify({"error": "Incorrect password. Please try again."}), 401
+
+    to_delete_ids = [
+        r["id"] for r in
+        apply_staff_filters(db.list_vehicles(), date_filter, range_start, range_end,
+                            selected_types, selected_routes)
+    ]
+    deleted_count = db.delete_vehicles(to_delete_ids)
+
+    return jsonify({"success": True, "deleted": deleted_count})
+
+
+@app.route("/staff/delete_selected", methods=["POST"])
+@login_required(role="staff")
+def staff_delete_selected():
+    """Delete a specific set of vehicles the staff member picked via
+    checkboxes — a lighter-weight alternative to Clear All Data for
+    removing just a handful of rows."""
+    data = request.get_json(force=True)
+    ids = data.get("ids", [])
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "No vehicles were selected."}), 400
+
+    deleted_count = db.delete_vehicles(set(str(i) for i in ids))
+    if deleted_count == 0:
+        return jsonify({"error": "None of the selected vehicles could be found."}), 404
+
+    return jsonify({"success": True, "deleted": deleted_count})
+
+
+# ---------------------------------------------------------------------------
+# Routes: Fleet Overview (staff-only) — historical trends from uploaded
+# spreadsheets, since the live dashboard only tracks current state.
+# ---------------------------------------------------------------------------
+ALLOWED_UPLOAD_EXTENSIONS = (".xlsx", ".zip")
+
+
+@app.route("/staff/fleet_overview")
+@login_required(role="staff")
+def staff_fleet_overview():
+    groups = build_fleet_overview_groups()
+    return render_template(
+        "fleet_overview.html",
+        vehicle_config=VEHICLE_CONFIG,
+        groups=groups,
+        display_name=session.get("display_name"),
+        active_tab="fleet_overview",
+    )
+
+
+@app.route("/staff/fleet_overview/upload", methods=["POST"])
+@login_required(role="staff")
+def staff_fleet_overview_upload():
+    files = request.files.getlist("files")
+    if not files:
+        return jsonify({"error": "Please choose at least one file to upload."}), 400
+
+    uploaded_by = session.get("display_name", session.get("username", ""))
+    all_new_rows = []
+    file_summaries = []
+
+    for f in files:
+        filename = f.filename or "upload"
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+            file_summaries.append({"filename": filename, "error": "Only .xlsx or .zip files are supported."})
+            continue
+
+        try:
+            raw = f.read()
+            workbooks = []
+            if ext == ".zip":
+                with zipfile.ZipFile(BytesIO(raw)) as zf:
+                    for name in zf.namelist():
+                        if name.lower().endswith(".xlsx"):
+                            workbooks.append((name, load_workbook(BytesIO(zf.read(name)), data_only=True)))
+            else:
+                workbooks.append((filename, load_workbook(BytesIO(raw), data_only=True)))
+
+            if not workbooks:
+                file_summaries.append({"filename": filename, "error": "No .xlsx sheets found inside."})
+                continue
+
+            file_added = 0
+            for inner_name, wb in workbooks:
+                rows = parse_fleet_workbook(wb, inner_name, uploaded_by)
+                all_new_rows.extend(rows)
+                file_added += len(rows)
+
+            file_summaries.append({"filename": filename, "rows_found": file_added})
+        except Exception as exc:
+            file_summaries.append({"filename": filename, "error": f"Couldn't read this file: {exc}"})
+
+    if not all_new_rows:
+        return jsonify({
+            "error": "No usable rows were found in the uploaded file(s). Make sure they're "
+                     "spreadsheets exported from this app's Download Spreadsheet button.",
+            "files": file_summaries,
+        }), 400
+
+    # Duplicate (type, plate, snapshot date) rows are skipped by the
+    # database's unique index, whether already stored or repeated here.
+    added, skipped_duplicates = db.add_fleet_history(all_new_rows)
+
+    return jsonify({
+        "success": True,
+        "added": added,
+        "skipped_duplicates": skipped_duplicates,
+        "files": file_summaries,
+    })
+
+
+@app.route("/staff/fleet_overview/vehicle")
+@login_required(role="staff")
+def staff_fleet_overview_vehicle():
+    vehicle_type = request.args.get("type", "")
+    plate = (request.args.get("plate", "") or "").strip()
+    if vehicle_type not in VEHICLE_CONFIG or not plate:
+        return jsonify({"error": "Vehicle not found."}), 404
+
+    history = [
+        r for r in read_fleet_history()
+        if r.get("vehicle_type") == vehicle_type and (r.get("plate_text") or "").strip().upper() == plate.upper()
+    ]
+    if not history:
+        return jsonify({"error": "No history found for this vehicle."}), 404
+
+    history.sort(key=lambda r: r.get("snapshot_date", ""))
+    latest = history[-1]
+
+    points = []
+    for r in history:
+        tyres = json.loads(r.get("tyres_json") or "{}")
+        points.append({
+            "date": r.get("snapshot_date", ""),
+            "odometer_text": r.get("odometer_text", ""),
+            "odometer_value": _extract_numeric(r.get("odometer_text", "")),
+            "tyres": tyres,
+            "entered_by": r.get("entered_by", ""),
+        })
+
+    return jsonify({
+        "vehicle_type": vehicle_type,
+        "vehicle_label": VEHICLE_CONFIG[vehicle_type]["label"],
+        "plate": latest.get("plate_text", plate),
+        "route_type": latest.get("route_type", ""),
+        "latest": {
+            "date": latest.get("snapshot_date", ""),
+            "odometer_text": latest.get("odometer_text", ""),
+            "tyres": json.loads(latest.get("tyres_json") or "{}"),
+            "entered_by": latest.get("entered_by", ""),
+        },
+        "history": points,
+    })
+
+
+@app.route("/staff/fleet_overview/clear", methods=["POST"])
+@login_required(role="staff")
+def staff_fleet_overview_clear():
+    data = request.get_json(force=True)
+    password = data.get("password", "")
+
+    if not check_password(session.get("username"), password):
+        return jsonify({"error": "Incorrect password. Please try again."}), 401
+
+    db.clear_fleet_history()
+
+    return jsonify({"success": True})
+
+
+@app.route("/staff/fleet_overview/download")
+@login_required(role="staff")
+def staff_fleet_overview_download():
+    history = read_fleet_history()
+    if not history:
+        return jsonify({"error": "There's no fleet history to download yet. Upload some spreadsheets first."}), 400
+
+    wb = build_fleet_history_workbook()
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    filename = f"fleet_overview_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Routes: Manage Employees (staff-only)
+# ---------------------------------------------------------------------------
+VALID_ROLES = ("technician", "staff")
+DEFAULT_NEW_PASSWORD = "1234"
+
+
+@app.route("/staff/employees")
+@login_required(role="staff")
+def staff_employees():
+    employees = [
+        {"username": u["username"], "name": u["name"], "role": u["role"]}
+        for u in read_all_users()
+    ]
+    return render_template(
+        "employees.html",
+        employees=employees,
+        display_name=session.get("display_name"),
+        my_username=session.get("username"),
+        active_tab="employees",
+    )
+
+
+@app.route("/staff/employees/add", methods=["POST"])
+@login_required(role="staff")
+def staff_employees_add():
+    data = request.get_json(force=True)
+    name = (data.get("name") or "").strip()
+    username = (data.get("username") or "").strip()
+    role = data.get("role", "")
+
+    if not name:
+        return jsonify({"error": "Please enter a full name."}), 400
+    if not username:
+        return jsonify({"error": "Please enter a username."}), 400
+    if role not in VALID_ROLES:
+        return jsonify({"error": "Please choose whether they're a Technician or SMRT Staff."}), 400
+
+    if db.username_taken(username):
+        return jsonify({"error": f'The username "{username}" is already taken.'}), 400
+    try:
+        db.add_user(username, DEFAULT_NEW_PASSWORD, role, name)
+    except psycopg.errors.UniqueViolation:
+        return jsonify({"error": f'The username "{username}" is already taken.'}), 400
+
+    return jsonify({"success": True, "employee": {"username": username, "name": name, "role": role}})
+
+
+@app.route("/staff/employees/edit/<username>", methods=["POST"])
+@login_required(role="staff")
+def staff_employees_edit(username):
+    if username == session.get("username"):
+        return jsonify({"error": "Use My Profile to edit your own account."}), 403
+
+    data = request.get_json(force=True)
+    new_name = (data.get("name") or "").strip()
+    new_username = (data.get("username") or "").strip()
+    new_role = data.get("role", "")
+
+    if not new_name:
+        return jsonify({"error": "Please enter a full name."}), 400
+    if not new_username:
+        return jsonify({"error": "Please enter a username."}), 400
+    if new_role not in VALID_ROLES:
+        return jsonify({"error": "Please choose whether they're a Technician or SMRT Staff."}), 400
+
+    if not db.get_user(username):
+        return jsonify({"error": "Employee not found."}), 404
+    if db.username_taken(new_username, except_username=username):
+        return jsonify({"error": f'The username "{new_username}" is already taken.'}), 400
+    try:
+        found = db.update_user(username, {"name": new_name, "username": new_username, "role": new_role})
+    except psycopg.errors.UniqueViolation:
+        return jsonify({"error": f'The username "{new_username}" is already taken.'}), 400
+    if not found:
+        return jsonify({"error": "Employee not found."}), 404
+
+    return jsonify({
+        "success": True,
+        "employee": {"username": new_username, "name": new_name, "role": new_role},
+        "old_username": username,
+    })
+
+
+@app.route("/staff/employees/delete/<username>", methods=["POST"])
+@login_required(role="staff")
+def staff_employees_delete(username):
+    if username == session.get("username"):
+        return jsonify({"error": "You can't delete your own account from here."}), 403
+
+    target = db.get_user(username)
+    if not target:
+        return jsonify({"error": "Employee not found."}), 404
+
+    if target["role"] == "staff" and db.count_staff_except(username) == 0:
+        return jsonify({"error": "Can't delete the last remaining SMRT Staff account."}), 400
+
+    db.delete_user(username)
+
+    return jsonify({"success": True})
+
+
+# ---------------------------------------------------------------------------
+# Routes: My Profile (staff-only, self-service username/password)
+# ---------------------------------------------------------------------------
+@app.route("/staff/profile")
+@login_required(role="staff")
+def staff_profile():
+    return render_template(
+        "profile.html",
+        display_name=session.get("display_name"),
+        my_username=session.get("username"),
+        active_tab="profile",
+    )
+
+
+@app.route("/staff/profile/update", methods=["POST"])
+@login_required(role="staff")
+def staff_profile_update():
+    data = request.get_json(force=True)
+    new_username = (data.get("username") or "").strip()
+    new_password = data.get("password") or ""
+    my_username = session.get("username")
+
+    if not new_username:
+        return jsonify({"error": "Username can't be empty."}), 400
+
+    if not db.get_user(my_username):
+        return jsonify({"error": "Your account couldn't be found."}), 404
+    if db.username_taken(new_username, except_username=my_username):
+        return jsonify({"error": f'The username "{new_username}" is already taken.'}), 400
+
+    changes = {"username": new_username}
+    if new_password:
+        changes["password"] = new_password
+    try:
+        db.update_user(my_username, changes)
+    except psycopg.errors.UniqueViolation:
+        return jsonify({"error": f'The username "{new_username}" is already taken.'}), 400
+
+    # The username/password just changed underneath this session, so log
+    # the person out immediately — they'll sign back in with whichever of
+    # the two they changed.
+    session.clear()
+    return jsonify({"success": True})
+
+
+if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0", port=5000, threaded=True)

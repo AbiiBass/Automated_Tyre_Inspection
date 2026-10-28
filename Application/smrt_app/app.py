@@ -663,7 +663,30 @@ def technician_home():
         vehicles=rows,
         vehicle_config=VEHICLE_CONFIG,
         display_name=session.get("display_name"),
+        selected_device=session.get("esp_device", ""),
     )
+
+
+ESP_DEVICE_IDS = {"ESP_001", "ESP_002", "ESP_003"}
+
+
+@app.route("/technician/esp/device", methods=["POST"])
+@login_required(role="technician")
+def technician_esp_device():
+    data = request.get_json(silent=True) or {}
+    device_id = data.get("device_id", "")
+    if device_id not in ESP_DEVICE_IDS and device_id != "":
+        return jsonify({"error": "Invalid device."}), 400
+    with esp_lock:
+        _esp_prune()
+        if device_id and any(
+            username != session["username"] and slot.get("device_id") == device_id
+            for username, slot in esp_slots.items()
+        ):
+            return jsonify({"error": "This device is currently being used by another technician."}), 409
+        esp_slots.pop(session["username"], None)
+    session["esp_device"] = device_id
+    return jsonify({"success": True, "device_id": device_id})
 
 
 @app.route("/technician/config")
@@ -917,14 +940,19 @@ def esp_measurement():
     now = datetime.now().timestamp()
     with esp_lock:
         _esp_prune(now)
+        # Only the technician paired with the sending board can receive it.
         # Every armed box is still listening, even ones that already hold a
         # value - a new message simply replaces it (seq goes up by one).
-        waiting = list(esp_slots.items())
+        payload = request.get_json(silent=True)
+        device_id = payload.get("device_id") if isinstance(payload, dict) else None
+        if device_id not in ESP_DEVICE_IDS:
+            return jsonify({"error": "A valid device_id (ESP_001, ESP_002, ESP_003) is required."}), 400
+        waiting = [(user, slot) for user, slot in esp_slots.items()
+                   if slot.get("device_id") == device_id]
         if not waiting:
             return jsonify({
-                "error": "No technician is listening. Tap a tyre field in the app, then send again."
+                "error": "No technician is listening on this device. Select the device on the homepage and tap a tyre field."
             }), 409
-        # Most recently tapped field wins.
         user, slot = max(waiting, key=lambda us: us[1]["armed_at"])
         slot["result"] = values
         slot["seq"] += 1
@@ -940,11 +968,18 @@ def technician_esp_arm():
     tyre = str(data.get("tyre", ""))[:8]
     if not re.fullmatch(r"[A-Za-z0-9]+", tyre or ""):
         return jsonify({"error": "Invalid tyre."}), 400
+    device_id = session.get("esp_device")
+    if device_id not in ESP_DEVICE_IDS:
+        return jsonify({"error": "Select a device on the technician homepage first."}), 409
     token = str(uuid.uuid4())
     now = datetime.now().timestamp()
     with esp_lock:
         _esp_prune(now)
+        if any(username != session["username"] and slot.get("device_id") == device_id
+               for username, slot in esp_slots.items()):
+            return jsonify({"error": "Device is currently in use by another technician."}), 409
         esp_slots[session["username"]] = {
+            "device_id": device_id,
             "token": token, "tyre": tyre, "armed_at": now, "last_seen": now,
             "result": None, "seq": 0, "received_at": None,
         }

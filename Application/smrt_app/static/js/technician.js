@@ -17,6 +17,36 @@ let mediaStream = null;
 
 const CFG = window.VEHICLE_CONFIG;
 
+/* --------------------- Technician homepage device selector --------------------- */
+const deviceSelect = document.getElementById('tech-device-select');
+if (deviceSelect) {
+  let savedDevice = deviceSelect.value;
+  const status = document.getElementById('tech-device-status');
+  deviceSelect.addEventListener('change', async () => {
+    const chosen = deviceSelect.value;
+    deviceSelect.disabled = true;
+    status.textContent = 'Saving device selection…';
+    try {
+      const res = await fetch('/technician/esp/device', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_id: chosen })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unable to select device');
+      savedDevice = chosen;
+      status.textContent = chosen ? '✓ Device selected for this session' : 'Select a device to receive measurements.';
+      status.classList.remove('error');
+    } catch (error) {
+      deviceSelect.value = savedDevice;
+      status.textContent = error.message;
+      status.classList.add('error');
+    } finally {
+      deviceSelect.disabled = false;
+    }
+  });
+}
+
 /* ---------------------------- Toast helper ---------------------------- */
 function showToast(msg, isError) {
   const t = document.getElementById('toast');

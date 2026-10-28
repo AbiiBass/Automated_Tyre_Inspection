@@ -32,6 +32,26 @@
 
   <div class="tech-page">
     <div class="tech-content">
+      <section class="tech-device-card" aria-labelledby="device-card-title">
+        <div class="tech-device-heading">
+          <span class="tech-device-icon"><i class="fa fa-wifi" aria-hidden="true"></i></span>
+          <div>
+            <h2 id="device-card-title">Measurement Device</h2>
+            <p>Choose your ESP32 once before starting inspections.</p>
+          </div>
+        </div>
+        <label for="tech-device-select">Select device</label>
+        <select id="tech-device-select" class="tech-device-select" aria-describedby="tech-device-status">
+          <option value="" {% if not selected_device %}selected{% endif %}>Select a device</option>
+          <option value="ESP_001" {% if selected_device == 'ESP_001' %}selected{% endif %}>Device 1</option>
+          <option value="ESP_002" {% if selected_device == 'ESP_002' %}selected{% endif %}>Device 2</option>
+          <option value="ESP_003" {% if selected_device == 'ESP_003' %}selected{% endif %}>Device 3</option>
+        </select>
+        <div id="tech-device-status" class="tech-device-status" role="status" aria-live="polite">
+          {% if selected_device %}<i class="fa fa-check-circle" aria-hidden="true"></i> Device selected for this session{% else %}Select a device to receive measurements.{% endif %}
+        </div>
+      </section>
+
       <h2 class="section-title">Today's Vehicle Inspections</h2>
       <!-- <p class="section-subtitle"><i class="fa fa-info-circle" aria-hidden="true"></i> You're only seeing inspections you personally logged today. Other technicians' entries — and anything older — are still safe on the SMRT Staff dashboard.</p> -->
 
