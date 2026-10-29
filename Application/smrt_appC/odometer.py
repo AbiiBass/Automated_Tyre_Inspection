@@ -7,6 +7,7 @@ Input:
     A Base64 image string, either:
       - raw Base64, or
       - a data URL such as: data:image/jpeg;base64,...
+    (or, from the command line, a path to an image file)
 
 Output:
     The predicted odometer reading as text, e.g. "12345.6", or an empty
@@ -14,21 +15,26 @@ Output:
 
 Required packages:
     pip install paddleocr paddlepaddle opencv-python numpy
+
+Usage:
+    python odometer.py                 # prompts for a Base64 string
+    python odometer.py photo.jpg       # reads an image file directly
+    ODOMETER_DEBUG=1 python odometer.py photo.jpg
 """
 
 from paddleocr import PaddleOCR, TextRecognition
 import numpy as np
 import cv2
-import time
 import re
+import sys
+import time
 import binascii
 import base64
 import os
 
-# must be set before paddleocr/paddlex is imported
+# Set these before importing PaddleOCR/PaddleX.
 os.environ["PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT"] = "0"
 
-# Number of CPU threads used for inference.
 CPU_THREADS = int(os.environ.get("ODOMETER_THREADS", "4"))
 os.environ["OMP_NUM_THREADS"] = str(CPU_THREADS)
 os.environ["MKL_NUM_THREADS"] = str(CPU_THREADS)
@@ -47,13 +53,73 @@ MAX_ODOMETER_DIGITS = 7
 TEXT_DET_LIMIT_SIDE_LEN = 960
 TEXT_DET_LIMIT_TYPE = "max"
 
+# Pass 1: whole-frame scan, used to LOCATE the odometer.
+PASS1_TARGET = 900
+PASS1_PAD = 30
+
+# Whole-frame scan plan, cheapest and most-often-successful first. Scanning
+# stops at the first STRONG reading, and results from all scans so far are
+# pooled otherwise. Measured on real photos: seven-segment digits read best
+# when they are ~25-60 px tall. A close-up (digits 120-150 px in a ~950 px
+# photo) reads perfectly at 240-500 px but fails at 900 (and a noisy 900 px
+# scan can take 9s+); a wide dashboard shot (digits ~30 px in a 2048 px photo)
+# needs 900. So: small scales first, 900 only if they fail.
+# Modes: "strong", "mild", "none", "smooth" (grayscale + blur, removes moire
+# and colour fringing), "smooth_inv" (same, inverted to dark-on-light).
+SCAN_PLAN = [
+    (400, "mild"),
+    (300, "none"),
+    (500, "smooth"),
+    (900, "strong"),
+    (600, "smooth_inv"),
+    (400, "smooth_inv"),
+]
+
+# Quality gates. A wrong answer is worse than an empty one.
+MIN_TOKEN_SCORE = 0.15        # tokens below this are dropped as detector noise
+MIN_CANDIDATE_SCORE = 0.30    # a reading must be at least this confident to compete
+MIN_ACCEPT_CONFIDENCE = 0.50  # final answer below this is returned as ""
+MIN_DIGIT_HEIGHT_PX = 10.0    # ignore digit-height estimates below this
+
+# Pass 2: crop around the odometer and rescale so digits are about this tall.
+TARGET_DIGIT_HEIGHT = 45.0
+ZOOM_MIN_LONG_SIDE = 300
+ZOOM_MAX_LONG_SIDE = 900
+ZOOM_PAD = 30
+
+# Tile scan (last resort). Tiles are never upscaled beyond this size.
 TILE_TARGET_SIDE = 900
 TILE_PAD = 30
+
+# Row merging: join digit fragments such as "64" + "1447" + "7".
+MERGE_MAX_GAP_FRAC = 1.5     # max horizontal gap, as a multiple of box height
+MERGE_MAX_DY_FRAC = 0.4      # max vertical center offset, same units
 
 # Set ODOMETER_DEBUG=1 to print per-pass diagnostics and per-call timings.
 ODOMETER_DEBUG = os.environ.get("ODOMETER_DEBUG") == "1"
 
+ODO_LABEL_PROXIMITY_WEIGHT = 50.0
+ODO_LABEL_PROXIMITY_RADIUS = 220.0   # pixels, in the padded processing image
+NEGATIVE_LABEL_PENALTY_WEIGHT = 50.0
+NEGATIVE_LABEL_PROXIMITY_RADIUS = 220.0
+UNIT_SUFFIX_BONUS = 25.0
+MERGED_LABEL_BONUS = 40.0
+DIGIT_LENGTH_BONUS = 12.0
+DIGIT_COUNT_BONUS = 3.0              # per digit; prefers fuller readings
+CONFIDENCE_WEIGHT = 20.0
+MIN_PLAUSIBLE_SCORE = 0.0
 
+
+def dbg(msg):
+    if ODOMETER_DEBUG:
+        print(f"[odometer debug] {msg}")
+
+
+def fmt_pairs(texts, scores):
+    return list(zip(texts, [round(float(s), 3) for s in scores]))
+
+
+# Detection + recognition pipeline.
 ocr = PaddleOCR(
     text_detection_model_name="PP-OCRv5_mobile_det",
     text_recognition_model_name="en_PP-OCRv5_mobile_rec",
@@ -73,8 +139,7 @@ _raw_predict = ocr.predict
 def _timed_predict(*args, **kwargs):
     t0 = time.perf_counter()
     out = _raw_predict(*args, **kwargs)
-    if ODOMETER_DEBUG:
-        print(f"[odometer debug] predict took {time.perf_counter() - t0:.2f}s")
+    dbg(f"predict took {time.perf_counter() - t0:.2f}s")
     return out
 
 
@@ -142,7 +207,37 @@ def assess_blur(gray_img):
     return cv2.Laplacian(gray_img, cv2.CV_64F).var()
 
 
-def enhance_image(img_bgr):
+def enhance_image(img_bgr, mode="strong"):
+    """
+    mode:
+      "strong" - original behavior (bilateral + CLAHE 3.0 + unsharp mask)
+      "mild"   - light denoise + gentle CLAHE, no sharpening. Better for
+                 already-sharp, grainy images where strong enhancement
+                 amplifies texture to the same contrast as the digits.
+      "none"   - return the image untouched
+    """
+    if mode == "none":
+        return img_bgr
+
+    if mode in ("smooth", "smooth_inv"):
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (0, 0), sigmaX=1.2)
+        clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(4, 4))
+        gray = clahe.apply(gray)
+        if mode == "smooth_inv":
+            gray = 255 - gray
+        return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+    if mode == "mild":
+        denoised = cv2.bilateralFilter(
+            img_bgr, d=5, sigmaColor=50, sigmaSpace=50)
+        lab = cv2.cvtColor(denoised, cv2.COLOR_BGR2LAB)
+        l_channel, a_channel, b_channel = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
+        l_enhanced = clahe.apply(l_channel)
+        return cv2.cvtColor(
+            cv2.merge((l_enhanced, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
+
     denoised = cv2.bilateralFilter(img_bgr, d=9, sigmaColor=75, sigmaSpace=75)
     lab = cv2.cvtColor(denoised, cv2.COLOR_BGR2LAB)
     l_channel, a_channel, b_channel = cv2.split(lab)
@@ -176,6 +271,7 @@ def resize_to_long_side(img_bgr, target_long_side):
 
 
 def resize_crop_for_zoom(crop_bgr, min_long_side, max_long_side):
+    """Fallback zoom rule used when digit height is unknown."""
     h, w = crop_bgr.shape[:2]
     long_side = max(h, w)
     if long_side < min_long_side:
@@ -189,19 +285,11 @@ def resize_crop_for_zoom(crop_bgr, min_long_side, max_long_side):
     return cv2.resize(crop_bgr, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=interp)
 
 
-# ---------------------------------------------------------------------------
-# Odometer reading selection
-# ---------------------------------------------------------------------------
-
-ODO_LABEL_PROXIMITY_WEIGHT = 50.0
-ODO_LABEL_PROXIMITY_RADIUS = 220.0   # pixels, in the padded processing image
-NEGATIVE_LABEL_PENALTY_WEIGHT = 50.0
-NEGATIVE_LABEL_PROXIMITY_RADIUS = 220.0
-UNIT_SUFFIX_BONUS = 25.0
-MERGED_LABEL_BONUS = 40.0
-DIGIT_LENGTH_BONUS = 12.0
-CONFIDENCE_WEIGHT = 20.0
-MIN_PLAUSIBLE_SCORE = 0.0
+def pad_white(img, pad):
+    return cv2.copyMakeBorder(
+        img, pad, pad, pad, pad,
+        borderType=cv2.BORDER_CONSTANT, value=[255, 255, 255],
+    )
 
 
 def box_center(box):
@@ -267,7 +355,8 @@ def is_unit_only_label(text):
 
 
 def has_unit_suffix(text):
-    return re.search(r"\d\s*(km|mi|miles?)\b", text.lower()) is not None
+    # "125km/h" is a speed, not an odometer unit
+    return re.search(r"\d\s*(km|mi|miles?)\b(?!\s*/)", text.lower()) is not None
 
 
 def has_merged_positive_label(text):
@@ -296,8 +385,12 @@ def select_odometer_reading(texts, scores, boxes=None):
         if value is None:
             # not 4-7 digits (decimal point not counted)
             continue
+        if score < MIN_CANDIDATE_SCORE:
+            continue
 
-        points = score * CONFIDENCE_WEIGHT + DIGIT_LENGTH_BONUS
+        n_digits = len(value.replace(".", ""))
+        points = score * CONFIDENCE_WEIGHT + \
+            DIGIT_LENGTH_BONUS + DIGIT_COUNT_BONUS * n_digits
         has_direct_signal = False
 
         if has_merged_positive_label(text):
@@ -338,6 +431,56 @@ def select_odometer_reading(texts, scores, boxes=None):
     return best_value, best_score, best_box, is_strong
 
 
+def is_numeric_fragment(text):
+    t = text.strip()
+    return re.fullmatch(r"[0-9.,\s]+", t) is not None and re.search(r"\d", t) is not None
+
+
+def merge_row_tokens(texts, scores, boxes):
+    """
+    Join numeric fragments that sit on the same row with small gaps, e.g.
+    "64" + "1447" + "7" -> "6414477". The merged tokens are APPENDED; the
+    original tokens are kept too. Call this once per OCR run (never on
+    results pooled from several runs, or the same digits could be joined
+    twice).
+    """
+    idx = [
+        i for i, (t, b) in enumerate(zip(texts, boxes))
+        if b is not None and is_numeric_fragment(t)
+    ]
+    idx.sort(key=lambda i: boxes[i][0])
+
+    groups = []
+    for i in idx:
+        b = boxes[i]
+        placed = False
+        for g in groups:
+            lb = boxes[g[-1]]
+            h = max(lb[3] - lb[1], b[3] - b[1])
+            if h <= 0:
+                continue
+            dy = abs(box_center(lb)[1] - box_center(b)[1])
+            gap = b[0] - lb[2]
+            if dy <= MERGE_MAX_DY_FRAC * h and -0.5 * h <= gap <= MERGE_MAX_GAP_FRAC * h:
+                g.append(i)
+                placed = True
+                break
+        if not placed:
+            groups.append([i])
+
+    out_t, out_s, out_b = list(texts), list(scores), list(boxes)
+    for g in groups:
+        if len(g) < 2:
+            continue
+        merged_text = "".join(texts[i].strip() for i in g)
+        merged_score = float(sum(scores[i] for i in g)) / len(g)
+        lefts, tops, rights, bottoms = zip(*(boxes[i] for i in g))
+        out_t.append(merged_text)
+        out_s.append(merged_score)
+        out_b.append((min(lefts), min(tops), max(rights), max(bottoms)))
+    return out_t, out_s, out_b
+
+
 def is_near_miss_reading(text):
     if looks_like_clock(text) or is_temperature_like(text):
         return False
@@ -361,13 +504,31 @@ def find_odometer_roi(texts, scores, boxes, padding_frac=0.8, min_padding_px=20)
     if candidate_box is not None:
         anchor_boxes.append(candidate_box)
 
-    # Fallback: no label, unit, or valid candidate was found. Zoom in on any
-    # digit-heavy token that was rejected as a value, so pass 2 can re-read it.
+    # Fallback 1: zoom on any digit-heavy token that was rejected as a value.
+    # Junk tokens (very low confidence) are ignored.
     if not anchor_boxes:
         anchor_boxes = [
-            box for text, box in zip(texts, boxes)
-            if box is not None and is_near_miss_reading(text)
+            box for text, score, box in zip(texts, scores, boxes)
+            if box is not None and score >= MIN_CANDIDATE_SCORE
+            and is_near_miss_reading(text)
         ]
+
+    # Fallback 2: the single most confident box containing a digit (e.g. a
+    # lone "3" read at 0.74). Digits of an odometer sit side by side, so the
+    # crop is stretched far to the left and right of that box.
+    if not anchor_boxes:
+        digit_boxes = [
+            (score, box) for text, score, box in zip(texts, scores, boxes)
+            if box is not None and score >= MIN_CANDIDATE_SCORE
+            and re.search(r"\d", text)
+            and not looks_like_clock(text) and not is_temperature_like(text)
+        ]
+        if not digit_boxes:
+            return None
+        _, (l, t, r, b) = max(digit_boxes, key=lambda x: x[0])
+        pad_x = 8.0 * max(r - l, (b - t) * 0.5)
+        pad_y = max((b - t) * 0.8, min_padding_px)
+        return (l - pad_x, t - pad_y, r + pad_x, b + pad_y)
 
     if not anchor_boxes:
         return None
@@ -377,6 +538,71 @@ def find_odometer_roi(texts, scores, boxes, padding_frac=0.8, min_padding_px=20)
     pad_x = max((right - left) * padding_frac, min_padding_px)
     pad_y = max((bottom - top) * padding_frac, min_padding_px)
     return (left - pad_x, top - pad_y, right + pad_x, bottom + pad_y)
+
+
+def estimate_digit_height(texts, boxes, scale):
+    """
+    Median height (in ORIGINAL-image pixels) of boxes that contain at least
+    two digits, or None if there are none. `scale` converts original pixels
+    to the coordinate space the boxes live in.
+    """
+    heights = []
+    for text, box in zip(texts, boxes):
+        if box is None:
+            continue
+        if len(re.sub(r"\D", "", text)) < 2:
+            continue
+        if is_temperature_like(text) or looks_like_clock(text):
+            continue
+        heights.append(box[3] - box[1])
+    if not heights:
+        return None
+    est = float(np.median(heights)) / scale
+    return est if est >= MIN_DIGIT_HEIGHT_PX else None
+
+
+def ocr_full_frame(img, target, mode, pass1_scale, allow_recognizer_fallback=False):
+    """
+    Run OCR on the whole frame resized to `target` long side. Boxes are mapped
+    into the canonical coordinate space (the PASS1_TARGET-sized image plus
+    PASS1_PAD padding), so results from different scales can be pooled and
+    fed to find_odometer_roi.
+    """
+    resized, sc = resize_to_long_side(img, target)
+    padded = pad_white(enhance_image(resized, mode), PASS1_PAD)
+
+    texts, scores, boxes = parse_pipeline_result(ocr.predict(padded))
+
+    if allow_recognizer_fallback:
+        if not texts:
+            rec_result = get_recognizer().predict(padded)
+            texts, scores = parse_recognition_only_result(rec_result)
+            boxes = [None] * len(texts)
+        if not texts:
+            binarized = last_resort_binarize(padded)
+            rec_result = get_recognizer().predict(binarized)
+            texts, scores = parse_recognition_only_result(rec_result)
+            boxes = [None] * len(texts)
+
+    k = pass1_scale / sc
+    mapped = []
+    for box in boxes:
+        if box is None:
+            mapped.append(None)
+        else:
+            mapped.append(tuple((v - PASS1_PAD) * k + PASS1_PAD for v in box))
+
+    keep = [i for i, (t, s) in enumerate(zip(texts, scores))
+            if t.strip() and s >= MIN_TOKEN_SCORE]
+    if len(keep) != len(texts):
+        dbg(f"dropped {len(texts) - len(keep)} junk tokens (score < {MIN_TOKEN_SCORE})")
+    texts = [texts[i] for i in keep]
+    scores = [scores[i] for i in keep]
+    mapped = [mapped[i] for i in keep]
+
+    texts, scores, mapped = merge_row_tokens(texts, scores, mapped)
+    dbg(f"scan @{target}px/{mode}: {fmt_pairs(texts, scores)}")
+    return texts, scores, mapped
 
 
 def scan_tiles(img, pass1_scale, pass1_pad, tile_frac=0.5, overlap=0.4):
@@ -402,11 +628,11 @@ def scan_tiles(img, pass1_scale, pass1_pad, tile_frac=0.5, overlap=0.4):
     votes = {}
     for x0, y0 in origins:
         crop = img[y0:y0 + tile_h, x0:x0 + tile_w]
-        crop, s = resize_to_long_side(crop, TILE_TARGET_SIDE)
-        padded = cv2.copyMakeBorder(
-            enhance_image(crop), TILE_PAD, TILE_PAD, TILE_PAD, TILE_PAD,
-            borderType=cv2.BORDER_CONSTANT, value=[255, 255, 255],
-        )
+        # Never upscale a tile: upscaling is what makes seven-segment digits
+        # fall apart. Only shrink when the tile is larger than the target.
+        target = min(TILE_TARGET_SIDE, max(crop.shape[:2]))
+        crop, s = resize_to_long_side(crop, target)
+        padded = pad_white(enhance_image(crop, "mild"), TILE_PAD)
         texts, scores, boxes = parse_pipeline_result(ocr.predict(padded))
         mapped = []
         for box in boxes:
@@ -419,6 +645,8 @@ def scan_tiles(img, pass1_scale, pass1_pad, tile_frac=0.5, overlap=0.4):
                     ((b - TILE_PAD) / s + y0) * pass1_scale + pass1_pad,
                 )
             mapped.append(box)
+
+        texts, scores, mapped = merge_row_tokens(texts, scores, mapped)
         all_texts.extend(texts)
         all_scores.extend(scores)
         all_boxes.extend(mapped)
@@ -431,72 +659,96 @@ def scan_tiles(img, pass1_scale, pass1_pad, tile_frac=0.5, overlap=0.4):
     return all_texts, all_scores, all_boxes
 
 
-# ---------------------------------------------------------------------------
-# Main prediction
-# ---------------------------------------------------------------------------
+def zoom_targets_for_crop(crop, digit_height_orig):
+    """Candidate long-side sizes for the ROI crop, best guess first."""
+    long_side = max(crop.shape[:2])
+    if digit_height_orig and digit_height_orig > 0:
+        primary = long_side * TARGET_DIGIT_HEIGHT / digit_height_orig
+        primary = int(
+            min(max(primary, ZOOM_MIN_LONG_SIDE), ZOOM_MAX_LONG_SIDE))
+        alternate = int(max(primary * 0.6, 250))
+        return [primary] if alternate >= primary else [primary, alternate]
+    # unknown digit size: original 650-900 rule, plus a smaller alternative
+    fallback = int(min(max(long_side, 650), ZOOM_MAX_LONG_SIDE))
+    return [fallback, 400]
+
+
+def run_pass2(img, roi, pass1_scale, texts, boxes):
+    orig_h, orig_w = img.shape[:2]
+    l, t, r, b = roi
+    orig_l = max(0, (l - PASS1_PAD) / pass1_scale)
+    orig_t = max(0, (t - PASS1_PAD) / pass1_scale)
+    orig_r = min(orig_w, (r - PASS1_PAD) / pass1_scale)
+    orig_b = min(orig_h, (b - PASS1_PAD) / pass1_scale)
+
+    if orig_r - orig_l < 4 or orig_b - orig_t < 4:
+        return None, 0.0
+
+    crop = img[int(orig_t):int(orig_b), int(orig_l):int(orig_r)]
+    digit_h = estimate_digit_height(texts, boxes, pass1_scale)
+    dbg(f"pass2 crop={crop.shape[1]}x{crop.shape[0]} est. digit height={digit_h}")
+
+    for target in zoom_targets_for_crop(crop, digit_h):
+        zoomed, _ = resize_to_long_side(crop, target)
+        # mild first (strong sharpening just amplifies grain); then the
+        # smoothed + inverted variant for moire / colour-fringed displays
+        for mode in ("mild", "smooth_inv"):
+            padded = pad_white(enhance_image(zoomed, mode), ZOOM_PAD)
+            texts2, scores2, boxes2 = parse_pipeline_result(
+                ocr.predict(padded))
+            texts2, scores2, boxes2 = merge_row_tokens(texts2, scores2, boxes2)
+            dbg(f"pass2 @{target}px/{mode}: {fmt_pairs(texts2, scores2)}")
+            if not texts2:
+                continue
+            value2, conf2, _box2, _strong2 = select_odometer_reading(
+                texts2, scores2, boxes2)
+            if value2 is not None:
+                return value2, conf2
+    return None, 0.0
+
 
 def predict_odometer_reading(base64_string: str) -> str:
     image_bytes = decode_base64_image(base64_string)
+    return predict_from_bytes(image_bytes)
+
+
+def predict_from_bytes(image_bytes: bytes) -> str:
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
         raise ValueError(
-            "The Base64 data was decoded, but it is not a valid supported image."
+            "The image data was read, but it is not a valid supported image."
         )
 
-    # Pass 1: fast whole-frame scan just to LOCATE the odometer. Pass 1
-    # doesn't need to read those digits correctly, only find roughly
-    # where they are; pass 2 below re-reads them at real resolution.
-    pass1_img, pass1_scale = resize_to_long_side(img, 900)
+    h, w = img.shape[:2]
+    pass1_scale = PASS1_TARGET / float(max(h, w))
 
     if ODOMETER_DEBUG:
-        gray_for_blur = cv2.cvtColor(pass1_img, cv2.COLOR_BGR2GRAY)
-        blur_score = assess_blur(gray_for_blur)
-        print(
-            f"[odometer debug] blur score: {blur_score:.1f} "
-            f"({'BLURRY' if blur_score < BLUR_THRESHOLD else 'ok'})"
-        )
+        pass1_img, _ = resize_to_long_side(img, PASS1_TARGET)
+        blur_score = assess_blur(cv2.cvtColor(pass1_img, cv2.COLOR_BGR2GRAY))
+        dbg(f"blur score: {blur_score:.1f} "
+            f"({'BLURRY' if blur_score < BLUR_THRESHOLD else 'ok'})")
 
-    pass1_enhanced = enhance_image(pass1_img)
-    pass1_pad = 40
-    pass1_padded = cv2.copyMakeBorder(
-        pass1_enhanced, top=pass1_pad, bottom=pass1_pad, left=pass1_pad, right=pass1_pad,
-        borderType=cv2.BORDER_CONSTANT, value=[255, 255, 255],
-    )
-
-    result = ocr.predict(pass1_padded)
-    texts, scores, boxes = parse_pipeline_result(result)
-
-    if not texts:
-        rec_result = get_recognizer().predict(pass1_padded)
-        texts, scores = parse_recognition_only_result(rec_result)
-        boxes = [None] * len(texts)
-
-    if not texts:
-        binarized = last_resort_binarize(pass1_padded)
-        rec_result = get_recognizer().predict(binarized)
-        texts, scores = parse_recognition_only_result(rec_result)
-        boxes = [None] * len(texts)
-
-    if ODOMETER_DEBUG:
-        print(
-            f"[odometer debug] pass1 texts: "
-            f"{list(zip(texts, [round(s, 3) for s in scores]))}"
-        )
-
-    # ---- Decide whether pass 1 is already good enough on its own.
-    # Every predict() call carries a large, roughly-fixed cost on this
-    # kind of hardware, so the biggest lever isn't image size -- it's how
-    # many of these calls we make. If pass 1 already found a direct,
-    # unambiguous signal (e.g. a merged 'ODO229802km' token, or the only
-    # numeric candidate in frame at high confidence), a second
-    # verification pass is unlikely to change the answer and isn't worth
-    # its fixed cost. Pass 2 is reserved for when pass 1's answer is
-    # genuinely uncertain -- a proximity-based guess among competing
-    # decoys, or a low-confidence read -- where a closer look at real
-    # resolution can actually change the outcome.
-    value1, conf1, box1, is_strong = select_odometer_reading(
-        texts, scores, boxes)
+    # Pass 1: whole-frame scans (see SCAN_PLAN), stopping at the first strong
+    # reading and pooling everything seen so far otherwise.
+    texts, scores, boxes = [], [], []
+    value1, conf1, box1, is_strong = None, 0.0, None, False
+    used_scan = None
+    for target, mode in SCAN_PLAN:
+        t_x, s_x, b_x = ocr_full_frame(
+            img, target, mode, pass1_scale,
+            allow_recognizer_fallback=(target == PASS1_TARGET))
+        texts += t_x
+        scores += s_x
+        boxes += b_x
+        value1, conf1, box1, is_strong = select_odometer_reading(
+            texts, scores, boxes)
+        if is_strong:
+            used_scan = (target, mode)
+            break
+    if not is_strong:
+        dbg(
+            f"no strong reading after scan plan (value={value1!r}, conf={conf1:.3f})")
 
     value, confidence = None, 0.0
     used_pass2 = False
@@ -506,77 +758,44 @@ def predict_odometer_reading(base64_string: str) -> str:
         value, confidence = value1, conf1
     else:
         roi = find_odometer_roi(texts, scores, boxes)
-
-        if ODOMETER_DEBUG:
-            print(
-                f"[odometer debug] pass1 not strong enough "
-                f"(value={value1!r}, conf={conf1:.3f}); roi={roi}"
-            )
+        dbg(
+            f"pooled result not strong (value={value1!r}, conf={conf1:.3f}); roi={roi}")
 
         if roi is not None:
-            orig_h, orig_w = img.shape[:2]
-            l, t, r, b = roi
-            orig_l = max(0, (l - pass1_pad) / pass1_scale)
-            orig_t = max(0, (t - pass1_pad) / pass1_scale)
-            orig_r = min(orig_w, (r - pass1_pad) / pass1_scale)
-            orig_b = min(orig_h, (b - pass1_pad) / pass1_scale)
-
-            if orig_r - orig_l >= 4 and orig_b - orig_t >= 4:
-                crop = img[int(orig_t):int(orig_b), int(orig_l):int(orig_r)]
-                crop = resize_crop_for_zoom(
-                    crop, min_long_side=650, max_long_side=900)
-                crop_enhanced = enhance_image(crop)
-                crop_padded = cv2.copyMakeBorder(
-                    crop_enhanced, top=30, bottom=30, left=30, right=30,
-                    borderType=cv2.BORDER_CONSTANT, value=[255, 255, 255],
-                )
-                result2 = ocr.predict(crop_padded)
-                texts2, scores2, boxes2 = parse_pipeline_result(result2)
-
-                if ODOMETER_DEBUG:
-                    print(
-                        f"[odometer debug] pass2 (zoomed) texts: "
-                        f"{list(zip(texts2, [round(s, 3) for s in scores2]))}"
-                    )
-
-                if texts2:
-                    value2, conf2, _box2, _strong2 = select_odometer_reading(
-                        texts2, scores2, boxes2
-                    )
-                    if value2 is not None:
-                        value, confidence = value2, conf2
-                        used_pass2 = True
+            value2, conf2 = run_pass2(img, roi, pass1_scale, texts, boxes)
+            if value2 is not None:
+                value, confidence = value2, conf2
+                used_pass2 = True
 
         if value is None:
             value, confidence = value1, conf1
 
         if value is None:
-            texts3, scores3, boxes3 = scan_tiles(img, pass1_scale, pass1_pad)
-            if ODOMETER_DEBUG:
-                print(
-                    f"[odometer debug] pass3 (tiles) texts: "
-                    f"{list(zip(texts3, [round(sc, 3) for sc in scores3]))}"
-                )
+            texts3, scores3, boxes3 = scan_tiles(img, pass1_scale, PASS1_PAD)
+            dbg(f"pass3 (tiles) texts: {fmt_pairs(texts3, scores3)}")
             value3, conf3, _box3, _strong3 = select_odometer_reading(
-                texts3, scores3, boxes3
-            )
+                texts3, scores3, boxes3)
             if value3 is not None:
                 value, confidence = value3, conf3
                 used_pass3 = True
 
-    if ODOMETER_DEBUG:
-        print(
-            f"[odometer debug] used_pass2={used_pass2} used_pass3={used_pass3} "
-            f"final value={value!r} confidence={confidence:.3f}"
-        )
+    dbg(f"scan={used_scan} used_pass2={used_pass2} "
+        f"used_pass3={used_pass3} final value={value!r} confidence={confidence:.3f}")
+    if value is not None and confidence < MIN_ACCEPT_CONFIDENCE:
+        dbg(f"rejecting low-confidence reading {value!r} "
+            f"({confidence:.3f} < {MIN_ACCEPT_CONFIDENCE})")
+        return ""
     return value if value is not None else ""
 
 
 def main():
-    base64_string = input("Enter Base64 image string: ").strip()
-
     try:
-        prediction = predict_odometer_reading(base64_string)
+        if len(sys.argv) > 1:
+            with open(sys.argv[1], "rb") as f:
+                prediction = predict_from_bytes(f.read())
+        else:
+            base64_string = input("Enter Base64 image string: ").strip()
+            prediction = predict_odometer_reading(base64_string)
         print(prediction)
     except Exception as exc:
         print(f"ERROR: {exc}")
