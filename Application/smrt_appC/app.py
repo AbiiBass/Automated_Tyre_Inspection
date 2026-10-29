@@ -27,7 +27,8 @@ import db
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 app = Flask(__name__)
-app.secret_key = "smrt-fleet-inspection-secret-key-change-in-production"
+# app.secret_key = "smrt-fleet-inspection-secret-key-change-in-production"
+app.secret_key = os.environ.get("SECRET_KEY", "smrt-fleet-inspection-secret-key-change-in-production")
 
 db.init()
 
