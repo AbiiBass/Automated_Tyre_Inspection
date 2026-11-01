@@ -52,3 +52,10 @@ CREATE TABLE IF NOT EXISTS fleet_history (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS fleet_history_snapshot_key
     ON fleet_history (vehicle_type, (upper(btrim(plate_text))), snapshot_date);
+
+-- Fleet Overview now syncs from the dashboard: each snapshot remembers which
+-- dashboard vehicle it came from, so a later correction to that vehicle's
+-- plate/odometer updates the snapshot instead of leaving a stale one behind.
+-- Rows from the old spreadsheet-upload era keep vehicle_id = ''.
+ALTER TABLE fleet_history ADD COLUMN IF NOT EXISTS vehicle_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS fleet_history_vehicle_id_idx ON fleet_history (vehicle_id) WHERE vehicle_id <> '';

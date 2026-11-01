@@ -11,7 +11,7 @@ from flask import (
     Flask, render_template, request, redirect, url_for,
     session, jsonify, send_file, flash
 )
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -27,8 +27,8 @@ import db
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 app = Flask(__name__)
-# app.secret_key = "smrt-fleet-inspection-secret-key-change-in-production"
-app.secret_key = os.environ.get("SECRET_KEY", "smrt-fleet-inspection-secret-key-change-in-production")
+app.secret_key = "smrt-fleet-inspection-secret-key-change-in-production"
+# app.secret_key = os.environ.get("SECRET_KEY", "smrt-fleet-inspection-secret-key-change-in-production")
 
 db.init()
 
@@ -127,40 +127,30 @@ def find_row(rows, vid):
 
 
 # ---------------------------------------------------------------------------
-# Fleet Overview: historical snapshots built from uploaded spreadsheets
+# Fleet Overview: historical snapshots synced from the dashboard
 # ---------------------------------------------------------------------------
-# The live dashboard only ever holds *current* state (one row per vehicle,
-# overwritten on every edit) — there's no history to chart from it. Fleet
-# Overview instead accumulates one row per (plate, snapshot date) every
-# time staff upload a spreadsheet export, so the same plate can show up
-# many times over many uploads, each capturing what its readings were on
-# that date. That history is what makes the trend charts possible.
-VEHICLE_LABEL_TO_KEY = {cfg["label"].strip().lower(): key for key, cfg in VEHICLE_CONFIG.items()}
-ROUTE_LABEL_TO_KEY = {"feeder": "feeder", "trunk": "trunk"}
+# The live dashboard only ever holds *current* state (one row per inspection,
+# overwritten on every edit). Fleet Overview keeps a history table
+# (fleet_history) and fills it automatically from the dashboard: every
+# dashboard vehicle that has BOTH a plate number and an odometer reading
+# becomes one snapshot (dated by the inspection's last_edited time). Vehicles
+# missing either value can't be synced yet - they're counted as "pending" and
+# shown on the Fleet Overview page until staff fill them in on the dashboard.
+#
+# Snapshots are never deleted by the dashboard: clearing or deleting
+# dashboard rows leaves the history intact, which is what keeps long-term
+# trends possible. Only "Clear Fleet History" removes them.
+DASHBOARD_SYNC_SOURCE = "dashboard sync"
 
 
 def read_fleet_history():
     return db.list_fleet_history()
 
 
-def _normalize_snapshot_date(value):
-    """Accepts either the plain 'YYYY-MM-DD HH:MM:SS' string our own
-    exports use, or a datetime object (what openpyxl hands back if Excel
-    re-saved the cell as a real Date). Returns the normalized string, or
-    None if it can't be understood at all."""
-    if isinstance(value, datetime):
-        return value.strftime("%Y-%m-%d %H:%M:%S")
-    if not value:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
-        try:
-            return datetime.strptime(text, fmt).strftime("%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            continue
-    return None
+def _is_incomplete(row):
+    """True when a dashboard vehicle is missing its plate or odometer text."""
+    return (not (row.get("plate_text") or "").strip()
+            or not (row.get("odometer_text") or "").strip())
 
 
 def _extract_numeric(text):
@@ -177,94 +167,98 @@ def _extract_numeric(text):
         return None
 
 
-def parse_fleet_workbook(wb, source_filename, uploaded_by):
-    """Reads every worksheet in an uploaded workbook and returns a list of
-    fleet_history row dicts. Understands exactly the column layout
-    _build_inspection_workbook() produces (both the single-sheet and the
-    per-type split .xlsx files), so any spreadsheet downloaded from this
-    app's own Download Spreadsheet button can be re-uploaded here."""
-    new_rows = []
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def _snapshot_from_vehicle(v, synced_at):
+    """The fleet_history row a complete dashboard vehicle maps to."""
+    return {
+        "vehicle_type": v["vehicle_type"],
+        "route_type": v.get("route_type") or "",
+        "plate_text": (v.get("plate_text") or "").strip(),
+        "odometer_text": (v.get("odometer_text") or "").strip(),
+        "tyres_json": json.dumps(json.loads(v.get("tyres_json") or "{}")),
+        "entered_by": v.get("added_by") or "",
+        "snapshot_date": v.get("last_edited") or "",
+        "uploaded_by": DASHBOARD_SYNC_SOURCE,
+        "uploaded_at": synced_at,
+        "source_filename": DASHBOARD_SYNC_SOURCE,
+        "vehicle_id": v["id"],
+    }
 
-    for ws in wb.worksheets:
-        rows_iter = ws.iter_rows(values_only=True)
-        try:
-            header = next(rows_iter)
-        except StopIteration:
+
+def _snapshot_differs(old, new):
+    for f in ("vehicle_type", "route_type", "plate_text", "odometer_text",
+              "entered_by", "snapshot_date"):
+        if (old.get(f) or "") != (new.get(f) or ""):
+            return True
+    try:
+        return json.loads(old.get("tyres_json") or "{}") != json.loads(new.get("tyres_json") or "{}")
+    except ValueError:
+        return True
+
+
+def sync_fleet_from_dashboard():
+    """Brings fleet_history up to date with the dashboard and reports what
+    still can't be synced.
+
+    Returns a dict:
+      synced        - dashboard vehicles that are complete (now in history)
+      pending       - dashboard vehicles missing plate and/or odometer
+      pending_by_type  - {vehicle_type: count}
+      missing_plate / missing_odometer - how many are missing each value
+      added / updated  - what this call changed
+    Cheap to call on every page load: it only writes when something differs.
+    """
+    vehicles = db.list_vehicles()
+    synced_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    existing = {r["vehicle_id"]: r for r in read_fleet_history() if r.get("vehicle_id")}
+
+    to_insert, to_update, seen_keys = [], [], set()
+    pending_by_type = {vtype: 0 for vtype in VEHICLE_CONFIG}
+    pending = missing_plate = missing_odometer = synced = 0
+
+    for v in vehicles:
+        has_plate = bool((v.get("plate_text") or "").strip())
+        has_odo = bool((v.get("odometer_text") or "").strip())
+        if not (has_plate and has_odo):
+            pending += 1
+            if v["vehicle_type"] in pending_by_type:
+                pending_by_type[v["vehicle_type"]] += 1
+            if not has_plate:
+                missing_plate += 1
+            if not has_odo:
+                missing_odometer += 1
             continue
-        if not header:
-            continue
 
-        header = [str(h).strip() if h is not None else "" for h in header]
-        col_index = {name: i for i, name in enumerate(header)}
+        if v["vehicle_type"] not in VEHICLE_CONFIG or not _parse_last_edited(v.get("last_edited", "")):
+            continue    # no usable date -> can't place it on a timeline
 
-        tyre_cols = {}
-        for i, name in enumerate(header):
-            m = re.match(r"^Tyre (.+) \(mm\)$", name)
-            if m:
-                tyre_cols[m.group(1)] = i
-
-        vtype_idx = col_index.get("Vehicle Type")
-        route_idx = col_index.get("Route Type")
-        plate_idx = col_index.get("Plate Number")
-        odo_idx = col_index.get("Odometer Reading (km)")
-        entered_idx = col_index.get("Entered By")
-        date_idx = col_index.get("Last Edited")
-
-        if plate_idx is None or date_idx is None or vtype_idx is None:
-            continue  # doesn't look like one of our exports — skip this sheet
-
-        for row in rows_iter:
-            if row is None or all(c is None for c in row):
+        synced += 1
+        snap = _snapshot_from_vehicle(v, synced_at)
+        old = existing.get(v["id"])
+        if old is None:
+            # Two dashboard rows can share (type, plate, timestamp); the
+            # history keeps one snapshot per such key.
+            key = (snap["vehicle_type"], snap["plate_text"].upper(), snap["snapshot_date"])
+            if key in seen_keys:
                 continue
+            seen_keys.add(key)
+            to_insert.append(snap)
+        elif _snapshot_differs(old, snap):
+            to_update.append(snap)
 
-            plate_text = str(row[plate_idx]).strip() if plate_idx < len(row) and row[plate_idx] else ""
-            if not plate_text:
-                continue
+    added = updated = 0
+    if to_insert or to_update:
+        added, updated, _conflicts = db.sync_fleet_history(to_insert, to_update)
 
-            vtype_label = str(row[vtype_idx]).strip().lower() if vtype_idx < len(row) and row[vtype_idx] else ""
-            vehicle_type = VEHICLE_LABEL_TO_KEY.get(vtype_label)
-            if not vehicle_type:
-                continue
-
-            snapshot_date = _normalize_snapshot_date(row[date_idx] if date_idx < len(row) else None)
-            if not snapshot_date:
-                continue
-
-            route_type = ""
-            if route_idx is not None and route_idx < len(row) and row[route_idx]:
-                route_type = ROUTE_LABEL_TO_KEY.get(str(row[route_idx]).strip().lower(), "")
-
-            odometer_text = ""
-            if odo_idx is not None and odo_idx < len(row) and row[odo_idx] is not None:
-                odometer_text = str(row[odo_idx]).strip()
-
-            entered_by = ""
-            if entered_idx is not None and entered_idx < len(row) and row[entered_idx]:
-                entered_by = str(row[entered_idx]).strip()
-
-            tyres = {}
-            for code, idx in tyre_cols.items():
-                if idx < len(row) and row[idx] not in (None, ""):
-                    try:
-                        tyres[code] = float(row[idx])
-                    except (TypeError, ValueError):
-                        continue
-
-            new_rows.append({
-                "vehicle_type": vehicle_type,
-                "route_type": route_type,
-                "plate_text": plate_text,
-                "odometer_text": odometer_text,
-                "tyres_json": json.dumps(tyres),
-                "entered_by": entered_by,
-                "snapshot_date": snapshot_date,
-                "uploaded_by": uploaded_by,
-                "uploaded_at": now_str,
-                "source_filename": source_filename,
-            })
-
-    return new_rows
+    return {
+        "synced": synced,
+        "pending": pending,
+        "pending_by_type": pending_by_type,
+        "missing_plate": missing_plate,
+        "missing_odometer": missing_odometer,
+        "added": added,
+        "updated": updated,
+    }
 
 
 def build_fleet_overview_groups():
@@ -441,7 +435,7 @@ def build_fleet_history_workbook():
             plates.setdefault(key, []).append(r)
 
         if not plates:
-            empty_cell = ws.cell(row=3, column=1, value="No history uploaded yet for this vehicle type.")
+            empty_cell = ws.cell(row=3, column=1, value="No history yet for this vehicle type.")
             empty_cell.font = Font(italic=True, color="5B5348")
             continue
 
@@ -1013,6 +1007,7 @@ def staff_home():
         counts[key] = len([r for r in date_filtered_rows if r["vehicle_type"] == key])
     counts["feeder"] = len([r for r in date_filtered_rows if r.get("route_type") == "feeder"])
     counts["trunk"] = len([r for r in date_filtered_rows if r.get("route_type") == "trunk"])
+    counts["incomplete"] = len([r for r in date_filtered_rows if _is_incomplete(r)])
 
     # Type/route filtering and sorting now happen client-side (JS) so the
     # person can combine multiple filters instantly without a page reload.
@@ -1035,6 +1030,7 @@ def staff_home():
         range_end=range_end,
         counts=counts,
         total_all_time=len(all_rows),
+        start_incomplete=request.args.get("incomplete", "") == "1",
         display_name=session.get("display_name"),
         active_tab="dashboard",
     )
@@ -1314,8 +1310,7 @@ def staff_ocr_all_status(job_id):
 
 def _rows_missing_text(rows):
     """IDs of rows missing plate or odometer text — the shared download guard."""
-    return [r["id"] for r in rows if not r.get("plate_text", "").strip()
-            or not r.get("odometer_text", "").strip()]
+    return [r["id"] for r in rows if _is_incomplete(r)]
 
 
 def _sort_rows(rows, sort_param):
@@ -1379,7 +1374,8 @@ def _build_inspection_workbook(rows, sheet_title="Vehicle Inspections"):
     return wb
 
 
-def apply_staff_filters(rows, date_filter, start, end, selected_types, selected_routes):
+def apply_staff_filters(rows, date_filter, start, end, selected_types, selected_routes,
+                        incomplete_only=False):
     """The same date -> route -> type filtering pipeline the dashboard,
     download, and Clear All Data all share, so 'what's currently shown'
     means the same thing everywhere."""
@@ -1388,6 +1384,8 @@ def apply_staff_filters(rows, date_filter, start, end, selected_types, selected_
         rows = [r for r in rows if r.get("route_type") in selected_routes]
     if selected_types:
         rows = [r for r in rows if r["vehicle_type"] in selected_types]
+    if incomplete_only:
+        rows = [r for r in rows if _is_incomplete(r)]
     return rows
 
 
@@ -1401,6 +1399,7 @@ def staff_download():
     routes_param = request.args.get("routes", "").strip()
     sort_param = request.args.get("sort", "last_edited")
     split = request.args.get("split", "") == "1"
+    incomplete_only = request.args.get("incomplete", "") == "1"
 
     selected_types = set(t for t in types_param.split(",") if t)
     selected_routes = set(r for r in routes_param.split(",") if r)
@@ -1409,6 +1408,8 @@ def staff_download():
     rows = filter_by_date(rows, date_filter, range_start, range_end)
     if selected_routes:
         rows = [r for r in rows if r.get("route_type") in selected_routes]
+    if incomplete_only:
+        rows = [r for r in rows if _is_incomplete(r)]
 
     # --- Split mode: no vehicle-type filter is active, so hand back one
     # workbook per vehicle type (car / bus / double decker) instead of one
@@ -1493,6 +1494,7 @@ def staff_clear_all():
     range_end = data.get("end", "")
     types_param = (data.get("types") or "").strip()
     routes_param = (data.get("routes") or "").strip()
+    incomplete_only = bool(data.get("incomplete"))
 
     selected_types = set(t for t in types_param.split(",") if t)
     selected_routes = set(r for r in routes_param.split(",") if r)
@@ -1503,7 +1505,7 @@ def staff_clear_all():
     to_delete_ids = [
         r["id"] for r in
         apply_staff_filters(db.list_vehicles(), date_filter, range_start, range_end,
-                            selected_types, selected_routes)
+                            selected_types, selected_routes, incomplete_only)
     ]
     deleted_count = db.delete_vehicles(to_delete_ids)
 
@@ -1529,85 +1531,24 @@ def staff_delete_selected():
 
 
 # ---------------------------------------------------------------------------
-# Routes: Fleet Overview (staff-only) — historical trends from uploaded
-# spreadsheets, since the live dashboard only tracks current state.
+# Routes: Fleet Overview (staff-only) — historical trends, synced from the
+# dashboard, since the live dashboard only tracks current state.
 # ---------------------------------------------------------------------------
-ALLOWED_UPLOAD_EXTENSIONS = (".xlsx", ".zip")
 
 
 @app.route("/staff/fleet_overview")
 @login_required(role="staff")
 def staff_fleet_overview():
+    sync = sync_fleet_from_dashboard()
     groups = build_fleet_overview_groups()
     return render_template(
         "fleet_overview.html",
         vehicle_config=VEHICLE_CONFIG,
         groups=groups,
+        sync=sync,
         display_name=session.get("display_name"),
         active_tab="fleet_overview",
     )
-
-
-@app.route("/staff/fleet_overview/upload", methods=["POST"])
-@login_required(role="staff")
-def staff_fleet_overview_upload():
-    files = request.files.getlist("files")
-    if not files:
-        return jsonify({"error": "Please choose at least one file to upload."}), 400
-
-    uploaded_by = session.get("display_name", session.get("username", ""))
-    all_new_rows = []
-    file_summaries = []
-
-    for f in files:
-        filename = f.filename or "upload"
-        ext = os.path.splitext(filename)[1].lower()
-        if ext not in ALLOWED_UPLOAD_EXTENSIONS:
-            file_summaries.append({"filename": filename, "error": "Only .xlsx or .zip files are supported."})
-            continue
-
-        try:
-            raw = f.read()
-            workbooks = []
-            if ext == ".zip":
-                with zipfile.ZipFile(BytesIO(raw)) as zf:
-                    for name in zf.namelist():
-                        if name.lower().endswith(".xlsx"):
-                            workbooks.append((name, load_workbook(BytesIO(zf.read(name)), data_only=True)))
-            else:
-                workbooks.append((filename, load_workbook(BytesIO(raw), data_only=True)))
-
-            if not workbooks:
-                file_summaries.append({"filename": filename, "error": "No .xlsx sheets found inside."})
-                continue
-
-            file_added = 0
-            for inner_name, wb in workbooks:
-                rows = parse_fleet_workbook(wb, inner_name, uploaded_by)
-                all_new_rows.extend(rows)
-                file_added += len(rows)
-
-            file_summaries.append({"filename": filename, "rows_found": file_added})
-        except Exception as exc:
-            file_summaries.append({"filename": filename, "error": f"Couldn't read this file: {exc}"})
-
-    if not all_new_rows:
-        return jsonify({
-            "error": "No usable rows were found in the uploaded file(s). Make sure they're "
-                     "spreadsheets exported from this app's Download Spreadsheet button.",
-            "files": file_summaries,
-        }), 400
-
-    # Duplicate (type, plate, snapshot date) rows are skipped by the
-    # database's unique index, whether already stored or repeated here.
-    added, skipped_duplicates = db.add_fleet_history(all_new_rows)
-
-    return jsonify({
-        "success": True,
-        "added": added,
-        "skipped_duplicates": skipped_duplicates,
-        "files": file_summaries,
-    })
 
 
 def compute_wear_rates(points):
@@ -1669,6 +1610,7 @@ def staff_fleet_overview_vehicle():
     if vehicle_type not in VEHICLE_CONFIG or not plate:
         return jsonify({"error": "Vehicle not found."}), 404
 
+    sync_fleet_from_dashboard()
     history = [
         r for r in read_fleet_history()
         if r.get("vehicle_type") == vehicle_type and (r.get("plate_text") or "").strip().upper() == plate.upper()
@@ -1727,9 +1669,11 @@ def staff_fleet_overview_clear():
 @app.route("/staff/fleet_overview/download")
 @login_required(role="staff")
 def staff_fleet_overview_download():
+    sync_fleet_from_dashboard()
     history = read_fleet_history()
     if not history:
-        return jsonify({"error": "There's no fleet history to download yet. Upload some spreadsheets first."}), 400
+        return jsonify({"error": "There's no fleet history to download yet. Vehicles appear here once "
+                                 "their plate number and odometer reading are filled in on the Dashboard."}), 400
 
     wb = build_fleet_history_workbook()
     buf = BytesIO()

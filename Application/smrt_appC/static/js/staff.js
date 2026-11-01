@@ -12,19 +12,26 @@ function showToast(msg, isError) {
 
 /* ---------------------------- Filters (multi-select) ---------------------------- */
 const selectedTypes = new Set();
-const selectedRoutes = new Set();
+const selectedRoutes = new Set();   // holds at most ONE route: Feeder or Trunk, never both
+let incompleteOnly = false;
 let currentSort = 'last_edited';
 
 function togglePill(kind, value) {
   if (kind === 'all') {
     selectedTypes.clear();
     selectedRoutes.clear();
+    incompleteOnly = false;
   } else if (kind === 'type') {
     if (selectedTypes.has(value)) selectedTypes.delete(value);
     else selectedTypes.add(value);
   } else if (kind === 'route') {
-    if (selectedRoutes.has(value)) selectedRoutes.delete(value);
-    else selectedRoutes.add(value);
+    // Feeder and Trunk are mutually exclusive: tapping the active one turns
+    // it off; tapping the other one switches to it. Never both.
+    const wasActive = selectedRoutes.has(value);
+    selectedRoutes.clear();
+    if (!wasActive) selectedRoutes.add(value);
+  } else if (kind === 'incomplete') {
+    incompleteOnly = !incompleteOnly;
   }
 
   syncPillButtons();
@@ -42,7 +49,7 @@ function closeFilterWarning() {
 
 function syncPillButtons() {
   const allBtn = document.querySelector('.filter-pill[data-pill="all"]');
-  const noneSelected = selectedTypes.size === 0 && selectedRoutes.size === 0;
+  const noneSelected = selectedTypes.size === 0 && selectedRoutes.size === 0 && !incompleteOnly;
   if (allBtn) allBtn.classList.toggle('active', noneSelected);
 
   document.querySelectorAll('#type-pill-group .filter-pill[data-pill^="type:"]').forEach(btn => {
@@ -53,6 +60,15 @@ function syncPillButtons() {
     const val = btn.dataset.pill.split(':')[1];
     btn.classList.toggle('active', selectedRoutes.has(val));
   });
+  const incBtn = document.getElementById('incomplete-pill');
+  if (incBtn) incBtn.classList.toggle('active', incompleteOnly);
+}
+
+function updateIncompleteCount() {
+  const el = document.getElementById('incomplete-count');
+  if (!el) return;
+  const n = document.querySelectorAll('.inspection-card[data-incomplete="1"]').length;
+  el.textContent = `(${n})`;
 }
 
 function applyFilters() {
@@ -64,7 +80,8 @@ function applyFilters() {
     const route = card.dataset.route;
     const typeMatch = selectedTypes.size === 0 || selectedTypes.has(type);
     const routeMatch = selectedRoutes.size === 0 || selectedRoutes.has(route);
-    const match = typeMatch && routeMatch;
+    const incompleteMatch = !incompleteOnly || card.dataset.incomplete === '1';
+    const match = typeMatch && routeMatch && incompleteMatch;
     card.style.display = match ? '' : 'none';
     if (match) visibleCount++;
   });
@@ -222,7 +239,13 @@ function updateCardCompletionState(card) {
   const odoInput = card.querySelector('.odometer-text-input');
   const plateVal = plateInput ? plateInput.value.trim() : '';
   const odoVal = odoInput ? odoInput.value.trim() : '';
-  card.classList.toggle('complete', !!plateVal && !!odoVal);
+  const isComplete = !!plateVal && !!odoVal;
+  card.classList.toggle('complete', isComplete);
+  card.dataset.incomplete = isComplete ? '0' : '1';
+  // The Incomplete filter is NOT re-applied here on purpose: a card you've
+  // just finished stays on screen (so it doesn't vanish mid-edit) and drops
+  // out the next time any filter is changed. The pill count updates live.
+  updateIncompleteCount();
 }
 
 async function onStaffRouteSliderChange(id, checkboxEl) {
@@ -511,6 +534,7 @@ async function downloadSheet() {
   params.set('sort', currentSort);
   if (selectedTypes.size > 0) params.set('types', Array.from(selectedTypes).join(','));
   if (selectedRoutes.size > 0) params.set('routes', Array.from(selectedRoutes).join(','));
+  if (incompleteOnly) params.set('incomplete', '1');
   if (dateFilter === 'range') {
     const startInput = document.getElementById('range-start-input');
     const endInput = document.getElementById('range-end-input');
@@ -623,6 +647,7 @@ async function confirmClearAll() {
   const payload = { password, date_filter: dateFilter };
   if (selectedTypes.size > 0) payload.types = Array.from(selectedTypes).join(',');
   if (selectedRoutes.size > 0) payload.routes = Array.from(selectedRoutes).join(',');
+  if (incompleteOnly) payload.incomplete = true;
   if (dateFilter === 'range') {
     const startInput = document.getElementById('range-start-input');
     const endInput = document.getElementById('range-end-input');
@@ -809,7 +834,10 @@ async function confirmDeleteSelected() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Arriving from Fleet Overview's "Fill in on Dashboard" button.
+  if (window.START_INCOMPLETE) incompleteOnly = true;
   syncPillButtons();
+  applyFilters();
   syncExpandAllButton();
   document.querySelectorAll('.inspection-card').forEach(updateCardCompletionState);
   updateScrollTopButtonVisibility();

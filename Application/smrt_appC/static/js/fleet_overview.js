@@ -10,66 +10,6 @@ function showToast(msg, isError) {
   setTimeout(() => t.classList.remove('show'), 2800);
 }
 
-/* ---------------------------- Upload ---------------------------- */
-let fleetSelectedFiles = [];
-
-function onFleetFilesChosen(inputEl) {
-  fleetSelectedFiles = Array.from(inputEl.files || []);
-  const label = document.getElementById('fleet-upload-filenames');
-  const btn = document.getElementById('fleet-upload-btn');
-  if (fleetSelectedFiles.length === 0) {
-    label.textContent = 'Choose .xlsx or .zip file(s)…';
-    btn.disabled = true;
-  } else {
-    label.textContent = fleetSelectedFiles.length === 1
-      ? fleetSelectedFiles[0].name
-      : `${fleetSelectedFiles.length} files selected`;
-    btn.disabled = false;
-  }
-}
-
-async function uploadFleetFiles() {
-  if (fleetSelectedFiles.length === 0) return;
-  const btn = document.getElementById('fleet-upload-btn');
-  const originalHtml = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = '<i class="fa fa-spinner fa-spin" aria-hidden="true"></i> Uploading...';
-
-  const formData = new FormData();
-  fleetSelectedFiles.forEach(f => formData.append('files', f));
-
-  const resultBox = document.getElementById('fleet-upload-result');
-  resultBox.innerHTML = '';
-
-  try {
-    const res = await fetch('/staff/fleet_overview/upload', { method: 'POST', body: formData });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Upload failed.');
-
-    const parts = [];
-    if (data.added > 0) {
-      parts.push(`<span class="ok-count">${data.added} new record${data.added === 1 ? '' : 's'} added</span>`);
-    }
-    if (data.skipped_duplicates > 0) {
-      parts.push(`<span class="skip-count">${data.skipped_duplicates} duplicate${data.skipped_duplicates === 1 ? '' : 's'} skipped</span>`);
-    }
-    resultBox.innerHTML = parts.length ? parts.join(' · ') : 'Nothing new to add — looks like this was already uploaded.';
-    showToast(`Upload complete — ${data.added} new record${data.added === 1 ? '' : 's'} added.`);
-
-    document.getElementById('fleet-upload-input').value = '';
-    fleetSelectedFiles = [];
-    document.getElementById('fleet-upload-filenames').textContent = 'Choose .xlsx or .zip file(s)…';
-
-    setTimeout(() => window.location.reload(), 900);
-  } catch (err) {
-    resultBox.innerHTML = `<span class="fail-count">${err.message}</span>`;
-    showToast(err.message, true);
-  } finally {
-    btn.disabled = fleetSelectedFiles.length === 0;
-    btn.innerHTML = originalHtml;
-  }
-}
-
 /* ---------------------------- Download all data ---------------------------- */
 async function downloadFleetData() {
   const btn = document.getElementById('fleet-download-btn');

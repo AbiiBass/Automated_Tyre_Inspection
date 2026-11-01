@@ -58,6 +58,13 @@
             <i class="fa fa-road" aria-hidden="true"></i> Trunk Route <span class="count">({{ counts.trunk }})</span>
           </button>
         </div>
+        <div class="pill-divider"></div>
+        <div class="pill-group" id="incomplete-pill-group">
+          <button type="button" class="filter-pill incomplete-pill" id="incomplete-pill" data-pill="incomplete" onclick="togglePill('incomplete')"
+                  title="Show only vehicles that are missing a license plate or odometer reading">
+            <i class="fa fa-exclamation-circle" aria-hidden="true"></i> Incomplete <span class="count" id="incomplete-count">({{ counts.incomplete }})</span>
+          </button>
+        </div>
       </div>
       <div class="toolbar-right-actions">
         <select class="sort-select" id="sort-select" onchange="applySort(this.value)">
@@ -144,6 +151,7 @@
         {% set cfg = vehicle_config[v.vehicle_type] %}
         <div class="inspection-card {{ 'complete' if v.plate_text and v.odometer_text else '' }}"
              data-id="{{ v.id }}"
+             data-incomplete="{{ '0' if v.plate_text and v.odometer_text else '1' }}"
              data-type="{{ v.vehicle_type }}"
              data-route="{{ v.route_type or '' }}"
              data-plate="{{ (v.plate_text or '')|lower }}"
@@ -465,6 +473,7 @@
 
   <script>
     window.CURRENT_DATE_FILTER = "{{ date_filter }}";
+    window.START_INCOMPLETE = {{ 'true' if start_incomplete else 'false' }};
 
     // ---- helper the tutorial uses to expand one real card as a live demo ----
     let staffDemoCardId = null;
@@ -496,7 +505,7 @@
       },
       {
         title: "More Pages Above",
-        text: "Use these tabs to get to <strong>Fleet Overview</strong> (upload spreadsheets to track tread depth and odometer trends over time — it has its own Tutorial button too), <strong>Manage Employees</strong> (add, edit, or remove technician and staff accounts), and <strong>My Profile</strong> (change your own username or password) — more pages may join them here later.",
+        text: "Use these tabs to get to <strong>Fleet Overview</strong> (syncs automatically with this dashboard to track odometer, tread depth and wear-rate trends over time — it has its own Tutorial button too), <strong>Manage Employees</strong> (add, edit, or remove technician and staff accounts), and <strong>My Profile</strong> (change your own username or password) — more pages may join them here later.",
         target: () => document.querySelector('.staff-nav'),
         placement: 'bottom'
       },
@@ -508,8 +517,14 @@
       },
       {
         title: "Filter by Route Type",
-        text: "Feeder and Trunk route filters work the same way, and combine with the vehicle type filter. Since cars don't have a route type, selecting Car together with a route filter will warn you that only buses will match.",
+        text: "Feeder and Trunk route filters combine with the vehicle type filter, but only <strong>one route can be active at a time</strong> — tapping the other one switches to it, and tapping the active one turns it off. Since cars don't have a route type, selecting Car together with a route filter will warn you that only buses will match.",
         target: () => document.getElementById('route-pill-group'),
+        placement: 'bottom'
+      },
+      {
+        title: "Find Incomplete Entries",
+        text: "<strong>Incomplete</strong> shows only vehicles that are still missing a license plate or an odometer reading. Vehicles need both before they can sync to <strong>Fleet Overview</strong>, so this is your to-do list. It combines with the other filters, and <strong>All</strong> clears it.",
+        target: () => document.getElementById('incomplete-pill-group'),
         placement: 'bottom'
       },
       {

@@ -744,3 +744,34 @@ by `/staff/fleet_overview/vehicle` as `history[i].wear` and `wear_summary`):
   chart is replaced by a short "not enough data yet" note.
 
 The downloaded Excel workbook is unchanged (still odometer + tread charts).
+
+
+## Fleet Overview now syncs from the Dashboard (no more uploads)
+
+- **Upload removed.** The upload card and `/staff/fleet_overview/upload` are gone.
+  Opening Fleet Overview (and its vehicle detail / Download All Data) syncs
+  `fleet_history` from the Dashboard automatically (`sync_fleet_from_dashboard()`
+  in `app.py`).
+- **What syncs:** every Dashboard vehicle with **both** a plate number and an
+  odometer reading becomes one snapshot, dated by its `last_edited` time. Each
+  snapshot stores the Dashboard `vehicle_id` (new `fleet_history.vehicle_id`
+  column, added by `schema.sql` on startup), so correcting a plate/odometer later
+  *updates* that snapshot instead of leaving a stale one. Old snapshots from the
+  upload era are adopted (linked) when they match a Dashboard vehicle on
+  type + plate + date, so nothing is duplicated.
+- **Pending count:** vehicles missing a plate and/or odometer can't sync. The page
+  shows how many are "yet to be updated" (split by vehicle type and by what's
+  missing) with a **Fill in on Dashboard** button that opens `/staff?incomplete=1`.
+- **History is kept.** Deleting / clearing Dashboard rows does not remove their
+  snapshots; only **Clear Fleet History** does (and still-present Dashboard
+  vehicles sync back in on the next page load).
+
+## Dashboard filters
+
+- **New "Incomplete" pill:** shows only vehicles missing a plate or odometer. Combines
+  (AND) with type/route filters; **All** clears it. Its count updates live as you fill
+  fields; a card you just completed stays visible until the next filter change.
+  Download and Clear All Data honour it too (`incomplete` param), so "what's shown"
+  still equals "what's exported/deleted".
+- **Feeder / Trunk are now mutually exclusive:** clicking one deselects the other;
+  clicking the active one turns both off.

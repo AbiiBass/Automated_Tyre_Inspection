@@ -7,10 +7,24 @@ import math
 # ========================================
 # CONFIGURATION
 # ========================================
+host = None
 
-SERVER_URL = "https://devotee-unsuited-moisture.ngrok-free.dev/api/esp/measurement"
+while host not in [1, 2]:
+    host = int(input("Ngrok(1) Render(2): ").strip())
+    if host == 1:
+        SERVER_URL = "https://devotee-unsuited-moisture.ngrok-free.dev/api/esp/measurement"
+        API_KEY = "local-test-key"
+    elif host == 2:
+        SERVER_URL = "https://automated-tyre-inspection.onrender.com/api/esp/measurement"
+        API_KEY = "smrt-ee4002d-capstone-espboards"
+    else:
+        print("Invalid input. Please enter 1 or 2.")
 
-API_KEY = "local-test-key"
+# SERVER_URL = "https://devotee-unsuited-moisture.ngrok-free.dev/api/esp/measurement"
+# SERVER_URL = "https://automated-tyre-inspection.onrender.com/api/esp/measurement"
+
+# API_KEY = "local-test-key"
+# API_KEY = "smrt-ee4002d-capstone-espboards"
 
 # Fixed device identification
 DEVICE_ID = "ESP_002"
@@ -74,16 +88,29 @@ while True:
             "value": measurement_string
         }).encode("utf-8")
 
-        req = Request(
-            SERVER_URL,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "X-API-Key": API_KEY,
-                "ngrok-skip-browser-warning": "true"
-            },
-            method="POST"
-        )
+        if host == 1:
+            print("Sending to Ngrok server...")
+            req = Request(
+                SERVER_URL,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-API-Key": API_KEY,
+                    "ngrok-skip-browser-warning": "true" # TO COMMENT OUT LATER
+                },
+                method="POST"
+            )
+        elif host == 2:
+            print("Sending to Render server...")
+            req = Request(
+                SERVER_URL,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-API-Key": API_KEY
+                },
+                method="POST"
+            )
 
         with urlopen(req, timeout=15) as response:
             print("HTTP Status:", response.status)

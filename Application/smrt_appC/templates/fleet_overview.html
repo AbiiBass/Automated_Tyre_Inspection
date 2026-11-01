@@ -35,10 +35,9 @@
       <div class="employees-header">
         <div>
           <h2 class="section-title">Fleet Overview</h2>
-          <!-- <p class="section-subtitle"><i class="fa fa-info-circle" aria-hidden="true"></i>
-            Upload spreadsheets exported from <strong>Download Spreadsheet</strong> on the Dashboard
-            (either the combined file or the per-type .zip) to build up a history for each plate —
-            tread depth and odometer trends over time, not just the current reading.
+          <!-- <p class="section-subtitle"><i class="fa fa-refresh" aria-hidden="true"></i>
+            Synced automatically with the Dashboard — odometer, tread depth and wear-rate trends for every
+            vehicle that has a plate number and odometer reading.
           </p> -->
         </div>
         <button class="btn btn-primary" style="width:auto;" id="fleet-download-btn" onclick="downloadFleetData()"
@@ -47,18 +46,52 @@
         </button>
       </div>
 
-      <div class="fleet-upload-card">
-        <div class="fleet-upload-row">
-          <label class="fleet-file-label" for="fleet-upload-input">
-            <i class="fa fa-upload" aria-hidden="true"></i>
-            <span id="fleet-upload-filenames">Choose .xlsx or .zip file(s)…</span>
-          </label>
-          <input type="file" id="fleet-upload-input" accept=".xlsx,.zip" multiple style="display:none;" onchange="onFleetFilesChosen(this)">
-          <button class="btn btn-primary" style="width:auto;" id="fleet-upload-btn" onclick="uploadFleetFiles()" disabled>
-            <i class="fa fa-cloud-upload" aria-hidden="true"></i> Upload
-          </button>
+      <div class="fleet-sync-card {{ 'has-pending' if sync.pending else 'all-synced' }}" id="fleet-sync-card">
+        <div class="fleet-sync-main">
+          <div class="fleet-sync-icon">
+            <i class="fa {{ 'fa-exclamation-triangle' if sync.pending else 'fa-check-circle' }}" aria-hidden="true"></i>
+          </div>
+          <div class="fleet-sync-text">
+            <div class="fleet-sync-title">
+              {% if sync.pending %}
+                {{ sync.pending }} vehicle{{ '' if sync.pending == 1 else 's' }} yet to be updated
+              {% else %}
+                Fully synced with the Dashboard
+              {% endif %}
+            </div>
+            <div class="fleet-sync-sub">
+              This page syncs automatically with the Dashboard —
+              <strong id="fleet-synced-count">{{ sync.synced }}</strong> vehicle{{ '' if sync.synced == 1 else 's' }}
+              with a plate number and odometer reading {{ 'is' if sync.synced == 1 else 'are' }} included.
+              {% if sync.pending %}
+                The ones below can't sync until their missing details are filled in.
+              {% endif %}
+            </div>
+            {% if sync.pending %}
+            <div class="fleet-sync-chips">
+              {% for vtype, cfg in vehicle_config.items() %}
+                {% if sync.pending_by_type[vtype] %}
+                <span class="fleet-sync-chip">
+                  <img src="{{ url_for('static', filename='img/' + cfg.icon) }}" alt="">
+                  {{ cfg.label }} <strong>{{ sync.pending_by_type[vtype] }}</strong>
+                </span>
+                {% endif %}
+              {% endfor %}
+              {% if sync.missing_plate %}
+              <span class="fleet-sync-chip fleet-sync-chip-detail"><i class="fa fa-id-card-o" aria-hidden="true"></i> Missing plate <strong>{{ sync.missing_plate }}</strong></span>
+              {% endif %}
+              {% if sync.missing_odometer %}
+              <span class="fleet-sync-chip fleet-sync-chip-detail"><i class="fa fa-tachometer" aria-hidden="true"></i> Missing odometer <strong>{{ sync.missing_odometer }}</strong></span>
+              {% endif %}
+            </div>
+            {% endif %}
+          </div>
         </div>
-        <div class="fleet-upload-result" id="fleet-upload-result"></div>
+        {% if sync.pending %}
+        <a class="btn btn-primary fleet-sync-action" id="fleet-fill-btn" href="{{ url_for('staff_home', incomplete=1) }}">
+          <i class="fa fa-pencil" aria-hidden="true"></i> Fill in on Dashboard
+        </a>
+        {% endif %}
       </div>
 
       <div class="fleet-tables-row">
@@ -96,7 +129,7 @@
             </table>
             {% if groups[vtype]|length == 0 %}
             <div class="no-results-inline">
-              <p>No {{ cfg.label|lower }} history uploaded yet.</p>
+              <p>No {{ cfg.label|lower }} history yet.</p>
             </div>
             {% endif %}
           </div>
@@ -177,9 +210,10 @@
       </div>
       <div class="modal-body">
         <p class="danger-text">
-          This permanently deletes <strong>every uploaded snapshot</strong> for every vehicle —
+          This permanently deletes <strong>every snapshot</strong> for every vehicle —
           the three tables above and all the trend charts will be empty again. It does not
-          touch the live Dashboard data, only what's been uploaded here.
+          touch the live Dashboard data. Note that vehicles still on the Dashboard with a plate
+          number and odometer reading will be synced back in the next time this page loads.
         </p>
         <div class="field">
           <label for="clear-fleet-password-input"><i class="fa fa-lock" aria-hidden="true"></i> Confirm Your Password</label>
@@ -222,23 +256,23 @@
       {
         icon: "fa-line-chart",
         title: "Welcome to Fleet Overview!",
-        text: "The Dashboard only ever shows a vehicle's <strong>current</strong> state. This page builds a <strong>history</strong> for each plate out of the spreadsheets you already export, so you can see tread depth and odometer trends over time."
+        text: "The Dashboard only ever shows a vehicle's <strong>current</strong> state. This page builds a <strong>history</strong> for each plate from the Dashboard's data, so you can see odometer, tread depth and wear-rate trends over time."
       },
       {
-        title: "Upload Spreadsheets to Build History",
-        text: "Choose one or more <strong>.xlsx</strong> files (or the <strong>.zip</strong> the Dashboard's split download produces) and tap Upload. Every row becomes one dated snapshot. Uploading the same file twice is safe — duplicate snapshots are skipped automatically.",
-        target: () => document.querySelector('.fleet-upload-card'),
+        title: "Synced Automatically with the Dashboard",
+        text: "There's nothing to upload — every time you open this page it syncs with the Dashboard. A vehicle only syncs once it has <strong>both a license plate and an odometer reading</strong>. This box counts the vehicles that are still <strong>yet to be updated</strong>; tap <strong>Fill in on Dashboard</strong> to jump straight to them.",
+        target: () => document.getElementById('fleet-sync-card'),
         placement: 'bottom'
       },
       {
         title: "Three Tables, One Per Vehicle Type",
-        text: "Car, Bus, and Double Decker Bus each get their own table, showing one row per plate — its route (Bus/Double Decker only) and the date of its most recent uploaded snapshot.",
+        text: "Car, Bus, and Double Decker Bus each get their own table, showing one row per plate — its route (Bus/Double Decker only) and the date of its most recent snapshot.",
         target: () => document.querySelector('.fleet-tables-row'),
         placement: 'top'
       },
       {
         title: "Click Any Row for Details",
-        text: "Tap a plate to drill into it — its current readings and how they've changed over every snapshot you've uploaded for it.",
+        text: "Tap a plate to drill into it — its current readings and how they've changed over every snapshot recorded for it.",
         target: () => {
           const sample = _tutFindSampleVehicle();
           return sample ? document.querySelector('.fleet-row') : null;
@@ -247,11 +281,11 @@
       },
       {
         title: "Latest Readings & Trend Charts",
-        text: "The top shows the latest odometer reading and tyre tread depths (tyres over 3.2mm flagged red, same as the Dashboard). Below that, three charts plot every uploaded snapshot for this plate — odometer over time (km), tread depth over time (mm), and <strong>wear rate over time (mm/km)</strong>, one line per tyre position and the same colour for each tyre in both tyre charts. Wear rate is the tread lost per km since the previous snapshot, so it needs at least two snapshots with a rising odometer.",
+        text: "The top shows the latest odometer reading and tyre tread depths (tyres over 3.2mm flagged red, same as the Dashboard). Below that, three charts plot every snapshot for this plate — odometer over time (km), tread depth over time (mm), and <strong>wear rate over time (mm/km)</strong>, one line per tyre position and the same colour for each tyre in both tyre charts. Wear rate is the tread lost per km since the previous snapshot, so it needs at least two snapshots with a rising odometer.",
         target: () => {
           // Only point at the grid once the detail modal is actually open —
           // the element exists in the DOM either way, but spotlighting it
-          // while hidden (nothing was uploaded yet, so there's no sample
+          // while hidden (no history yet, so there's no sample
           // vehicle to open) would just highlight an empty, invisible box.
           const overlay = document.getElementById('fleet-detail-overlay');
           if (!overlay || !overlay.classList.contains('open')) return null;
@@ -265,14 +299,14 @@
       },
       {
         title: "Download All Data",
-        text: "This exports everything you've uploaded into one Excel file — a separate sheet per vehicle type, with a history table and odometer/tread charts built right into the spreadsheet for every plate.",
+        text: "This exports the whole fleet history into one Excel file — a separate sheet per vehicle type, with a history table and odometer/tread charts built right into the spreadsheet for every plate.",
         target: () => document.getElementById('fleet-download-btn'),
         placement: 'bottom',
         enter: () => { if (typeof closeFleetDetail === 'function') closeFleetDetail(); }
       },
       {
         title: "Clear Fleet History — Use with Care",
-        text: "This only erases what's been uploaded <em>here</em> — it never touches the live Dashboard data. Still permanent, so you'll need your password to confirm.",
+        text: "This only erases the history kept <em>here</em> — it never touches the live Dashboard data (and vehicles that are still on the Dashboard will sync back in next time you open this page). Still permanent, so you'll need your password to confirm.",
         target: () => document.getElementById('clear-fleet-history-btn'),
         placement: 'top'
       },

@@ -47,7 +47,7 @@ USER_FIELDS = ["username", "password", "role", "name"]
 FLEET_HISTORY_FIELDS = [
     "vehicle_type", "route_type", "plate_text", "odometer_text",
     "tyres_json", "entered_by", "snapshot_date",
-    "uploaded_by", "uploaded_at", "source_filename",
+    "uploaded_by", "uploaded_at", "source_filename", "vehicle_id",
 ]
 
 _pool = None
@@ -261,6 +261,51 @@ def add_fleet_history(rows):
             columns,
         ).fetchall()
     return len(inserted), len(rows) - len(inserted)
+
+
+def sync_fleet_history(to_insert, to_update):
+    """Applies a dashboard -> fleet sync.
+
+    to_insert: snapshot dicts for dashboard vehicles not yet in the history.
+               If an old (pre-sync) snapshot already exists for the same
+               (type, plate, date) and isn't linked to a vehicle yet, it is
+               adopted (linked) instead of duplicated.
+    to_update: snapshot dicts (with vehicle_id) whose dashboard values have
+               changed since they were last synced.
+    Returns (inserted_or_adopted, updated, conflicts).
+    """
+    inserted = updated = conflicts = 0
+    with _conn() as conn:
+        if to_insert:
+            columns = [[r.get(f) or "" for r in to_insert] for f in FLEET_HISTORY_FIELDS]
+            rows = conn.execute(
+                f"INSERT INTO fleet_history ({_FH_COLS}) "
+                f"SELECT * FROM unnest({', '.join(['%s::text[]'] * len(FLEET_HISTORY_FIELDS))}) "
+                "ON CONFLICT (vehicle_type, (upper(btrim(plate_text))), snapshot_date) "
+                "DO UPDATE SET vehicle_id = EXCLUDED.vehicle_id "
+                "WHERE fleet_history.vehicle_id = '' "
+                "RETURNING 1",
+                columns,
+            ).fetchall()
+            inserted = len(rows)
+        for r in to_update:
+            # A savepoint per row: if the corrected plate collides with
+            # another snapshot (same type + plate + date) only that row is
+            # skipped, not the whole sync.
+            try:
+                with conn.transaction():
+                    cur = conn.execute(
+                        "UPDATE fleet_history SET vehicle_type=%s, route_type=%s, plate_text=%s, "
+                        "odometer_text=%s, tyres_json=%s, entered_by=%s, snapshot_date=%s, "
+                        "uploaded_at=%s WHERE vehicle_id=%s",
+                        (r["vehicle_type"], r["route_type"], r["plate_text"], r["odometer_text"],
+                         r["tyres_json"], r["entered_by"], r["snapshot_date"], r["uploaded_at"],
+                         r["vehicle_id"]),
+                    )
+                    updated += cur.rowcount
+            except psycopg.errors.UniqueViolation:
+                conflicts += 1
+    return inserted, updated, conflicts
 
 
 def clear_fleet_history():

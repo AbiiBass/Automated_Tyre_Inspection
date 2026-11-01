@@ -1,0 +1,14 @@
+<div class="staff-nav">
+  <a class="staff-nav-tab {{ 'active' if active_tab == 'dashboard' else '' }}" href="{{ url_for('staff_home') }}">
+    <i class="fa fa-tachometer" aria-hidden="true"></i> Dashboard
+  </a>
+  <a class="staff-nav-tab {{ 'active' if active_tab == 'fleet_overview' else '' }}" href="{{ url_for('staff_fleet_overview') }}">
+    <i class="fa fa-line-chart" aria-hidden="true"></i> Fleet Overview
+  </a>
+  <a class="staff-nav-tab {{ 'active' if active_tab == 'employees' else '' }}" href="{{ url_for('staff_employees') }}">
+    <i class="fa fa-users" aria-hidden="true"></i> Manage Employees
+  </a>
+  <a class="staff-nav-tab {{ 'active' if active_tab == 'profile' else '' }}" href="{{ url_for('staff_profile') }}">
+    <i class="fa fa-id-badge" aria-hidden="true"></i> My Profile
+  </a>
+</div>
